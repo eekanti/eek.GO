@@ -28,8 +28,8 @@ All agents run locally on your server using LM Studio, ensuring:
 ### Deploy Now
 ```bash
 # 1. Clone and configure
-git clone https://github.com/eekanti/ai-coding-agents.git
-cd ai-coding-agents
+git clone https://github.com/eekanti/n8n-team.git
+cd n8n-team
 cp .env.example .env
 nano .env  # Edit DOMAIN_NAME, LOCAL_AI_MODEL, URLs
 
@@ -235,8 +235,8 @@ Aggregate Results → Output to User
 #### Step 1: Deploy the System (First Time Only)
 ```bash
 # Clone repository
-git clone https://github.com/eekanti/ai-coding-agents.git
-cd ai-coding-agents
+git clone https://github.com/eekanti/n8n-team.git
+cd n8n-team
 
 # Configure environment variables
 cp .env.example .env
@@ -396,7 +396,7 @@ docker-compose restart n8n
 - [LM Studio Server API](https://lmstudio.ai/docs) - LM Studio server configuration
 
 ### Community Support
-- **GitHub Issues**: Report bugs and feature requests at https://github.com/eekanti/ai-coding-agents/issues
+- **GitHub Issues**: Report bugs and feature requests at https://github.com/eekanti/n8n-team/issues
 - **n8n Discord**: Real-time chat for n8n-specific questions at https://discord.gg/n8n
 
 ---
