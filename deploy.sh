@@ -7,6 +7,7 @@ set -e  # Exit on error
 echo "========================================="
 echo "Multi-Agent System Deployment Script"
 echo "Server: Plexie (Ubuntu)"
+echo "Repository: n8n-team"
 echo "========================================="
 
 # Check if running as root or with sudo
@@ -62,7 +63,7 @@ print_status "All prerequisites met"
 echo ""
 echo "Step 2: Setting up project directory..."
 
-PROJECT_DIR="/root/ai-coding-agents"
+PROJECT_DIR="/root/n8n-team"
 if [ ! -d "$PROJECT_DIR" ]; then
     print_warning "Project directory does not exist, cloning repository..."
     git clone https://github.com/eekanti/n8n-team.git $PROJECT_DIR
