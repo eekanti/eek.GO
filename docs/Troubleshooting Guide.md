@@ -58,7 +58,7 @@ hostname -I  # Linux/Mac
 ipconfig     # Windows (look for IPv4 Address)
 
 # Update .env file on Plexie if needed:
-nano /root/ai-coding-agents/.env
+nano /root/n8n-team/.env
 LOCAL_AI_BASE_URL=http://CORRECT_IP:1234/v1
 ```
 
@@ -271,7 +271,7 @@ If LLM node shows configuration errors:
 #### Solution C: Use Expression Builder Instead of Manual Input
 For complex expressions, use n8n's visual expression builder:
 1. Click the field with the error
-2. Look for "Expression" tab in input area
+2. Look for **"Expression"** tab in input area
 3. Use drag-and-drop interface to build expressions visually
 4. This prevents syntax errors from manual typing
 
