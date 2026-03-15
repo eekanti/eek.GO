@@ -36,7 +36,7 @@ docker compose version  # or docker-compose if using standalone
 
 ```bash
 # Create project directory
-mkdir -p /root/ai-coding-agents && cd /root/ai-coding-agents
+mkdir -p /root/n8n-team && cd /root/n8n-team
 
 # Clone repository
 git clone https://github.com/eekanti/n8n-team.git .
@@ -59,7 +59,7 @@ nano .env
 
 ```bash
 # Navigate to project directory
-cd /root/ai-coding-agents
+cd /root/n8n-team
 
 # Start all containers in detached mode
 docker-compose up -d
@@ -196,7 +196,7 @@ docker-compose up -d
 ### Update to Latest Version
 
 ```bash
-cd /root/ai-coding-agents
+cd /root/n8n-team
 git pull origin main
 docker-compose pull
 docker-compose up -d --force-recreate
