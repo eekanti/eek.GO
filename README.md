@@ -199,7 +199,7 @@ All agent prompts are customized to your stack. To modify them:
 
 1. Open the relevant workflow in n8n editor
 2. Find the **"System Message"** or **"Prompt Template"** field in each LLM node
-3. Edit the prompt text directly (see `docs/Custom System Prompts - Your Stack.md` for templates)
+3. Edit the prompt text directly (see `docs/Custom System Prompts by Tech Stack.md` for templates)
 
 ### Add Project-Specific Rules
 
@@ -274,26 +274,33 @@ docker-compose up -d
 1. Increase temperature slightly (0.7 → 0.8) for more creative outputs
 2. Add more specific rules to the system prompts in each agent's LLM node
 3. Test with simpler requests first, then gradually increase complexity
-4. Use the "Custom System Prompts - Your Stack.md" document as a reference
+4. Use the "Custom System Prompts by Tech Stack.md" document as a reference
 
 ## 📁 File Structure
 
 ```
-ai-coding-agents/
+n8n-team/
 ├── docker-compose.yml        # Container configuration for n8n + Redis
 ├── .env.example              # Environment variables template
 ├── deploy.sh                 # Automated deployment script
 ├── README.md                 # This file
+├── QUICKSTART.md             # 5-minute quick start guide
+├── AI_CODING_AGENTS_OVERVIEW.md  # High-level system overview
+│
 ├── docs/                     # Documentation and prompt templates
-│   ├── Tech Stack Configuration.md
+│   ├── System Architecture Overview.md
+│   ├── Plexie Server Setup Guide.md
+│   ├── Troubleshooting Guide.md
 │   ├── Custom System Prompts by Tech Stack.md
-│   └── Custom System Prompts - Your Stack.md
-└── workflows/                # Pre-configured agent workflows
-    ├── 01-Planner-Agent.json
-    ├── 02-Code-Writer-Agent.json
-    ├── 03-Security-Reviewer-Agent.json
-    ├── 04-Quality-Reviewer-Agent.json
-    └── 05-Error-Logger-Agent.json
+│   ├── System Prompts Reference.md
+│   └── Tech Stack Configuration.md
+├── workflows/                # Pre-configured agent workflows
+│   ├── 01-Planner-Agent.json
+│   ├── 02-Code-Writer-Agent.json
+│   ├── 03-Security-Reviewer-Agent.json
+│   ├── 04-Quality-Reviewer-Agent.json
+│   └── 05-Error-Logger-Agent.json
+└── .gitignore                # Git ignore rules for project files
 ```
 
 ## 🎯 Next Steps After Deployment
