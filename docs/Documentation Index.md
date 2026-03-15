@@ -1,4 +1,4 @@
-# 📚 Documentation Index - AI Coding Agents
+# 📚 Documentation Index - AI Coding Agents on Plexie Server
 
 Welcome to the complete documentation for the Multi-Agent System on Plexie Server. This index provides quick navigation to all available resources organized by purpose and audience.
 
@@ -52,7 +52,7 @@ Welcome to the complete documentation for the Multi-Agent System on Plexie Serve
 ## 🗂️ Repository Structure
 
 ```
-ai-coding-agents/
+n8n-team/
 ├── README.md                    # Main project documentation with overview and setup
 ├── QUICKSTART.md                # 5-minute quick start guide
 ├── docker-compose.yml           # Docker Compose configuration for deployment
@@ -73,6 +73,7 @@ ai-coding-agents/
 │   ├── 04-Quality-Reviewer-Agent.json     # Quality Reviewer Agent workflow (quality assessment)
 │   └── 05-Error-Logger-Agent.json         # Error Logger Agent workflow (error handling)
 │
+├── AI_CODING_AGENTS_OVERVIEW.md        # High-level system overview and features
 └── .gitignore                  # Git ignore rules for project files
 ```
 
@@ -154,7 +155,7 @@ If you find errors or have suggestions for improvement:
 3. **For system architecture questions**: Read [System Architecture Overview](./System%20Architecture%20Overview.md)
 
 ### Community Support Channels
-- **GitHub Issues**: Report bugs and feature requests at https://github.com/eekanti/ai-coding-agents/issues
+- **GitHub Issues**: Report bugs and feature requests at https://github.com/eekanti/n8n-team/issues
 - **n8n Discord**: Real-time chat for n8n-specific questions at https://discord.gg/n8n
 
 ---
@@ -170,12 +171,6 @@ If you find errors or have suggestions for improvement:
 
 ---
 
-**Last Updated**: March 15, 2026  
-**Documentation Version**: 1.0.0  
-**Project Repository**: https://github.com/eekanti/ai-coding-agents
-
----
-
 ## 🎯 Quick Links Summary
 
 - **Start Here**: [README.md](../README.md)
@@ -184,6 +179,14 @@ If you find errors or have suggestions for improvement:
 - **Troubleshooting**: [Troubleshooting Guide](./docs/Troubleshooting%20Guide.md)
 - **Architecture**: [System Architecture Overview](./docs/System%20Architecture%20Overview.md)
 - **Customization**: [Custom Prompts by Tech Stack](./docs/Custom%20System%20Prompts%20by%20Tech%20Stack.md)
+
+---
+
+## 🔄 Repository Information
+
+**Project Repository**: https://github.com/eekanti/n8n-team  
+**Documentation Version**: 1.0.0  
+**Last Updated**: March 15, 2026  
 
 ---
 
