@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.n8n.io)",
+      "mcp__mcp-gateway__n8n_health_check"
+    ]
+  }
+}
