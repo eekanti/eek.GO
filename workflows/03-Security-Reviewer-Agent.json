@@ -2,47 +2,58 @@
   "name": "Security Reviewer Agent - Check Vulnerabilities",
   "nodes": [
     {
-      "parameters": {
-        "promptType": "string",
-        "question": "You are a Security Engineer reviewing code for standard OWASP Top 10 compliance.\nYour task is to identify security vulnerabilities and provide actionable fixes.\n\nCode to Review:\n{{ $json.code }}\n\nReview Checklist:\n- All user inputs validated with schema validation before processing\n- No raw SQL queries without parameterization (Prisma/Mongoose safe by default)\n- JWT secrets stored in environment variables, never hardcoded\n- Password hashing uses bcrypt or Argon2 (never plain text storage)\n- Rate limiting applied to all auth endpoints and search APIs\n- CORS configuration restricts to known domains only\n- No sensitive data (PII, credentials) logged or returned in responses\n- Dependencies checked for known vulnerabilities (npm audit compliant)\n- Error messages don't leak stack traces or internal details\n\nOutput Format:\nReturn valid JSON with these fields:\n{\n  \"security_score\": number (1-10),\n  \"critical_issues\": [array of issue objects],\n  \"high_priority\": [array of improvement suggestions],\n  \"recommendations\": [array of general recommendations]\n}\n\nFor each critical/high priority item include:\n{\n  \"issue\": description,\n  \"severity\": high/medium/low,\n  \"fix\": specific remediation steps\n}",
-        "messagesContent": [
-          {
-            "message": "You are a Security Engineer reviewing code for standard OWASP Top 10 compliance.\nYour task is to identify security vulnerabilities and provide actionable fixes.\n\nCode to Review:\n{{ $json.code }}\n\nReview Checklist:\n- All user inputs validated with schema validation before processing\n- No raw SQL queries without parameterization (Prisma/Mongoose safe by default)\n- JWT secrets stored in environment variables, never hardcoded\n- Password hashing uses bcrypt or Argon2 (never plain text storage)\n- Rate limiting applied to all auth endpoints and search APIs\n- CORS configuration restricts to known domains only\n- No sensitive data (PII, credentials) logged or returned in responses\n- Dependencies checked for known vulnerabilities (npm audit compliant)\n- Error messages don't leak stack traces or internal details\n\nOutput Format:\nReturn valid JSON with these fields:\n{\n  \"security_score\": number (1-10),\n  \"critical_issues\": [array of issue objects],\n  \"high_priority\": [array of improvement suggestions],\n  \"recommendations\": [array of general recommendations]\n}\n\nFor each critical/high priority item include:\n{\n  \"issue\": description,\n  \"severity\": high/medium/low,\n  \"fix\": specific remediation steps\n}"
-          }
-        ]
-      },
-      "id": "security-reviewer-llm",
-      "name": "Security Reviewer LLM",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "parameters": {},
+      "id": "trigger-node",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [450, 300],
-      "credentials": {
-        "lmChatOpenAi": {
-          "id": "local-llm-credential",
-          "name": "LM Studio Local LLM"
-        }
-      }
+      "position": [250, 300]
     },
     {
-      "parameters": {},
-      "id": "output-node",
-      "name": "Output Node",
+      "parameters": {
+        "jsCode": "const code = $json.code || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Security Engineer reviewing code for standard OWASP Top 10 compliance.\\nYour task is to identify security vulnerabilities and provide actionable fixes.\\n\\nCode to Review:\\n${code}\\n\\nReview Checklist:\\n- All user inputs validated with schema validation before processing\\n- No raw SQL queries without parameterization (Prisma/Mongoose safe by default)\\n- JWT secrets stored in environment variables, never hardcoded\\n- Password hashing uses bcrypt or Argon2 (never plain text storage)\\n- Rate limiting applied to all auth endpoints and search APIs\\n- CORS configuration restricts to known domains only\\n- No sensitive data (PII, credentials) logged or returned in responses\\n- Dependencies checked for known vulnerabilities (npm audit compliant)\\n- Error messages don't leak stack traces or internal details\\n\\nOutput Format:\\nReturn valid JSON with these fields:\\n{\\n  \\\"security_score\\\": number (1-10),\\n  \\\"critical_issues\\\": [array of issue objects],\\n  \\\"high_priority\\\": [array of improvement suggestions],\\n  \\\"recommendations\\\": [array of general recommendations]\\n}\\n\\nFor each critical/high priority item include:\\n{\\n  \\\"issue\\\": description,\\n  \\\"severity\\\": high/medium/low,\\n  \\\"fix\\\": specific remediation steps\\n}\\n\\nOutput ONLY the JSON, no markdown formatting.`\n      }\n    ],\n    temperature: 0.3,\n    max_tokens: 2048\n  }\n}];"
+      },
+      "id": "build-request",
+      "name": "Build Request",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 1,
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://10.0.0.100:1234/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "llm-request",
+      "name": "Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $json.choices[0].message.content;\nlet review;\ntry {\n  review = JSON.parse(content);\n} catch (e) {\n  review = { raw_output: content };\n}\nreturn [{ json: { security_review: review } }];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
     }
   ],
   "connections": {
-    "Security Reviewer LLM": {
-      "main": [
-        [
-          {
-            "node": "Output Node",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Execute Workflow Trigger": {
+      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
+    },
+    "Build Request": {
+      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
+    },
+    "Call LM Studio": {
+      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
     }
   },
   "settings": {

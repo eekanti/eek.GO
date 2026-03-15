@@ -1,0 +1,159 @@
+{
+  "name": "Master Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "coding-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { message: $json.body?.message || $json.message || '' } }];"
+      },
+      "id": "prepare-planner-input",
+      "name": "Prepare Planner Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "REPLACE_WITH_PLANNER_WORKFLOW_ID",
+        "options": {}
+      },
+      "id": "call-planner",
+      "name": "Call Planner Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const tasks = $json.tasks || [];\nconst firstTask = Array.isArray(tasks) ? tasks[0] : tasks;\nreturn [{ json: { task: firstTask } }];"
+      },
+      "id": "prepare-codewriter-input",
+      "name": "Prepare Code Writer Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "REPLACE_WITH_CODE_WRITER_WORKFLOW_ID",
+        "options": {}
+      },
+      "id": "call-code-writer",
+      "name": "Call Code Writer Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { code: $json.code || '' } }];"
+      },
+      "id": "prepare-security-input",
+      "name": "Prepare Security Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "REPLACE_WITH_SECURITY_REVIEWER_WORKFLOW_ID",
+        "options": {}
+      },
+      "id": "call-security-reviewer",
+      "name": "Call Security Reviewer Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Re-inject the original code since Security Reviewer output doesn't pass it through\nconst code = $('Call Code Writer Agent').first().json.code || '';\nconst securityReview = $json.security_review;\nreturn [{ json: { code: code, security_review: securityReview } }];"
+      },
+      "id": "prepare-quality-input",
+      "name": "Prepare Quality Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "REPLACE_WITH_QUALITY_REVIEWER_WORKFLOW_ID",
+        "options": {}
+      },
+      "id": "call-quality-reviewer",
+      "name": "Call Quality Reviewer Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const qualityReview = $json.quality_review;\nconst securityReview = $('Prepare Quality Input').first().json.security_review;\nconst code = $('Call Code Writer Agent').first().json.code;\nconst tasks = $('Call Planner Agent').first().json.tasks;\n\nreturn [{\n  json: {\n    status: 'completed',\n    tasks: tasks,\n    generated_code: code,\n    security_review: securityReview,\n    quality_review: qualityReview\n  }\n}];"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2250, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{"node": "Prepare Planner Input", "type": "main", "index": 0}]]
+    },
+    "Prepare Planner Input": {
+      "main": [[{"node": "Call Planner Agent", "type": "main", "index": 0}]]
+    },
+    "Call Planner Agent": {
+      "main": [[{"node": "Prepare Code Writer Input", "type": "main", "index": 0}]]
+    },
+    "Prepare Code Writer Input": {
+      "main": [[{"node": "Call Code Writer Agent", "type": "main", "index": 0}]]
+    },
+    "Call Code Writer Agent": {
+      "main": [[{"node": "Prepare Security Input", "type": "main", "index": 0}]]
+    },
+    "Prepare Security Input": {
+      "main": [[{"node": "Call Security Reviewer Agent", "type": "main", "index": 0}]]
+    },
+    "Call Security Reviewer Agent": {
+      "main": [[{"node": "Prepare Quality Input", "type": "main", "index": 0}]]
+    },
+    "Prepare Quality Input": {
+      "main": [[{"node": "Call Quality Reviewer Agent", "type": "main", "index": 0}]]
+    },
+    "Call Quality Reviewer Agent": {
+      "main": [[{"node": "Aggregate Results", "type": "main", "index": 0}]]
+    },
+    "Aggregate Results": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

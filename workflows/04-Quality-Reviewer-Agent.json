@@ -2,47 +2,58 @@
   "name": "Quality Reviewer Agent - Check Code Quality",
   "nodes": [
     {
-      "parameters": {
-        "promptType": "string",
-        "question": "You are a Principal Software Architect reviewing code quality and maintainability.\nYour task is to evaluate documentation coverage, test completeness, and architectural decisions.\n\nCode to Review:\n{{ $json.code }}\n\nReview Checklist:\n- All public functions/classes have JSDoc/Docstring comments\n- Unit tests cover critical paths (minimum 80% line coverage)\n- Error handling comprehensive with custom error types\n- Database queries optimized (no N+1 problems, indexes on foreign keys)\n- Configuration externalized via environment variables\n- Logging structured and appropriate log levels used\n- API endpoints follow REST conventions (proper HTTP methods, status codes)\n- React components use hooks correctly with no memory leaks\n\nOutput Format:\nReturn valid JSON with these fields:\n{\n  \"quality_score\": number (1-10),\n  \"strengths\": [array of positive observations],\n  \"areas_for_improvement\": [array of improvement items],\n  \"recommendations\": [array of general recommendations]\n}\n\nFor each area for improvement include:\n{\n  \"area\": name of the issue,\n  \"current_state\": description of current problem,\n  \"target\": what should be achieved,\n  \"fix\": specific remediation steps\n}",
-        "messagesContent": [
-          {
-            "message": "You are a Principal Software Architect reviewing code quality and maintainability.\nYour task is to evaluate documentation coverage, test completeness, and architectural decisions.\n\nCode to Review:\n{{ $json.code }}\n\nReview Checklist:\n- All public functions/classes have JSDoc/Docstring comments\n- Unit tests cover critical paths (minimum 80% line coverage)\n- Error handling comprehensive with custom error types\n- Database queries optimized (no N+1 problems, indexes on foreign keys)\n- Configuration externalized via environment variables\n- Logging structured and appropriate log levels used\n- API endpoints follow REST conventions (proper HTTP methods, status codes)\n- React components use hooks correctly with no memory leaks\n\nOutput Format:\nReturn valid JSON with these fields:\n{\n  \"quality_score\": number (1-10),\n  \"strengths\": [array of positive observations],\n  \"areas_for_improvement\": [array of improvement items],\n  \"recommendations\": [array of general recommendations]\n}\n\nFor each area for improvement include:\n{\n  \"area\": name of the issue,\n  \"current_state\": description of current problem,\n  \"target\": what should be achieved,\n  \"fix\": specific remediation steps\n}"
-          }
-        ]
-      },
-      "id": "quality-reviewer-llm",
-      "name": "Quality Reviewer LLM",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "parameters": {},
+      "id": "trigger-node",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [450, 300],
-      "credentials": {
-        "lmChatOpenAi": {
-          "id": "local-llm-credential",
-          "name": "LM Studio Local LLM"
-        }
-      }
+      "position": [250, 300]
     },
     {
-      "parameters": {},
-      "id": "output-node",
-      "name": "Output Node",
+      "parameters": {
+        "jsCode": "const code = $json.code || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Principal Software Architect reviewing code quality and maintainability.\\nYour task is to evaluate documentation coverage, test completeness, and architectural decisions.\\n\\nCode to Review:\\n${code}\\n\\nReview Checklist:\\n- All public functions/classes have JSDoc/Docstring comments\\n- Unit tests cover critical paths (minimum 80% line coverage)\\n- Error handling comprehensive with custom error types\\n- Database queries optimized (no N+1 problems, indexes on foreign keys)\\n- Configuration externalized via environment variables\\n- Logging structured and appropriate log levels used\\n- API endpoints follow REST conventions (proper HTTP methods, status codes)\\n- React components use hooks correctly with no memory leaks\\n\\nOutput Format:\\nReturn valid JSON with these fields:\\n{\\n  \\\"quality_score\\\": number (1-10),\\n  \\\"strengths\\\": [array of positive observations],\\n  \\\"areas_for_improvement\\\": [array of improvement items],\\n  \\\"recommendations\\\": [array of general recommendations]\\n}\\n\\nFor each area for improvement include:\\n{\\n  \\\"area\\\": name of the issue,\\n  \\\"current_state\\\": description of current problem,\\n  \\\"target\\\": what should be achieved,\\n  \\\"fix\\\": specific remediation steps\\n}\\n\\nOutput ONLY the JSON, no markdown formatting.`\n      }\n    ],\n    temperature: 0.5,\n    max_tokens: 2048\n  }\n}];"
+      },
+      "id": "build-request",
+      "name": "Build Request",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 1,
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://10.0.0.100:1234/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "llm-request",
+      "name": "Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $json.choices[0].message.content;\nlet review;\ntry {\n  review = JSON.parse(content);\n} catch (e) {\n  review = { raw_output: content };\n}\nreturn [{ json: { quality_review: review } }];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
     }
   ],
   "connections": {
-    "Quality Reviewer LLM": {
-      "main": [
-        [
-          {
-            "node": "Output Node",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Execute Workflow Trigger": {
+      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
+    },
+    "Build Request": {
+      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
+    },
+    "Call LM Studio": {
+      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
     }
   },
   "settings": {

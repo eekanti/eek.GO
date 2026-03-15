@@ -4,83 +4,56 @@
     {
       "parameters": {},
       "id": "trigger-node",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
       "position": [250, 300]
     },
     {
       "parameters": {
-        "promptType": "string",
-        "question": "You are a Senior Software Architect. Given this natural language request, break it down into structured tasks.\n\nRequest: {{ $json.body.message }}\n\nRequirements:\n- Each task should be independent and executable\n- List dependencies for each task (other tasks that must complete first)\n- Estimate complexity as low, medium, or high\n- Output valid JSON array format with these fields per task:\n  - task_id: unique identifier (e.g., TASK-001)\n  - description: clear, actionable description\n  - dependencies: array of other task_ids that must complete first (empty array if none)\n  - complexity: low, medium, or high\n\nOutput ONLY the JSON array, no markdown formatting.",
-        "messagesContent": [
-          {
-            "message": "You are a Senior Software Architect. Given this natural language request, break it down into structured tasks.\n\nRequest: {{ $json.body.message }}\n\nRequirements:\n- Each task should be independent and executable\n- List dependencies for each task (other tasks that must complete first)\n- Estimate complexity as low, medium, or high\n- Output valid JSON array format with these fields per task:\n  - task_id: unique identifier (e.g., TASK-001)\n  - description: clear, actionable description\n  - dependencies: array of other task_ids that must complete first (empty array if none)\n  - complexity: low, medium, or high\n\nOutput ONLY the JSON array, no markdown formatting."
-          }
-        ]
+        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Senior Software Architect. Given this natural language request, break it down into structured tasks.\\n\\nRequest: ${message}\\n\\nRequirements:\\n- Each task should be independent and executable\\n- List dependencies for each task (other tasks that must complete first)\\n- Estimate complexity as low, medium, or high\\n- Output valid JSON array format with these fields per task:\\n  - task_id: unique identifier (e.g., TASK-001)\\n  - description: clear, actionable description\\n  - dependencies: array of other task_ids that must complete first (empty array if none)\\n  - complexity: low, medium, or high\\n\\nOutput ONLY the JSON array, no markdown formatting.`\n      }\n    ],\n    temperature: 0.3,\n    max_tokens: 2048\n  }\n}];"
       },
-      "id": "planner-llm",
-      "name": "Planner LLM",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-      "typeVersion": 1,
-      "position": [450, 300],
-      "credentials": {
-        "lmChatOpenAi": {
-          "id": "local-llm-credential",
-          "name": "LM Studio Local LLM"
-        }
-      }
+      "id": "build-request",
+      "name": "Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
     },
     {
       "parameters": {
-        "rules": [
-          {
-            "condition": "jsonIsValid",
-            "outputKey": "parsedTasks"
-          }
-        ],
+        "method": "POST",
+        "url": "http://10.0.0.100:1234/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
         "options": {}
       },
-      "id": "parse-json",
-      "name": "Parse Tasks JSON",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.2,
+      "id": "llm-request",
+      "name": "Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $json.choices[0].message.content;\nlet tasks;\ntry {\n  tasks = JSON.parse(content);\n} catch (e) {\n  tasks = [{ raw_output: content }];\n}\nreturn [{ json: { tasks: tasks } }];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [
-        [
-          {
-            "node": "Planner LLM",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Execute Workflow Trigger": {
+      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
     },
-    "Planner LLM": {
-      "main": [
-        [
-          {
-            "node": "Parse Tasks JSON",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Build Request": {
+      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
     },
-    "Parse Tasks JSON": {
-      "main": [
-        [
-          {
-            "node": "Output Node",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Call LM Studio": {
+      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
     }
   },
   "settings": {

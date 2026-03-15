@@ -4,44 +4,25 @@
     {
       "parameters": {},
       "id": "trigger-node",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
       "position": [250, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Extract error details from input\nconst errorMessage = $json.error_message || 'Unknown error';\nconst errorDetails = JSON.stringify($json.error_details || {}, null, 2);\nconst timestamp = new Date().toISOString();\nconst agentName = $json.agent_name || 'Unknown Agent';\n\nreturn [{\n  json: {\n    timestamp: timestamp,\n    agent: agentName,\n    error_message: errorMessage,\n    error_details: errorDetails,\n    severity: $json.severity || 'medium',\n    status: 'logged'\n  }\n}];"
+        "jsCode": "const errorMessage = $json.error_message || 'Unknown error';\nconst errorDetails = JSON.stringify($json.error_details || {}, null, 2);\nconst timestamp = new Date().toISOString();\nconst agentName = $json.agent_name || 'Unknown Agent';\n\nreturn [{\n  json: {\n    timestamp: timestamp,\n    agent: agentName,\n    error_message: errorMessage,\n    error_details: errorDetails,\n    severity: $json.severity || 'medium',\n    status: 'logged'\n  }\n}];"
       },
       "id": "extract-error",
       "name": "Extract Error Details",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [450, 300]
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [
-        [
-          {
-            "node": "Extract Error Details",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Extract Error Details": {
-      "main": [
-        [
-          {
-            "node": "Output Node",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Execute Workflow Trigger": {
+      "main": [[{"node": "Extract Error Details", "type": "main", "index": 0}]]
     }
   },
   "settings": {
