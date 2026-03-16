@@ -1,0 +1,22 @@
+# Generated project output
+/home/will/src/
+src/
+
+# Environment files
+.env
+*.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

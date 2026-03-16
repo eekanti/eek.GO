@@ -60,24 +60,13 @@
     },
     {
       "parameters": {
-        "jsCode": "const tasks = $json.tasks || [];\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n\n// Init static data accumulator for this run\nconst staticData = this.getWorkflowStaticData('global');\nstaticData.taskResults = [];\nstaticData.currentProjectId = projectId;\nstaticData.projectGoal = projectGoal;\n\nif (tasks.length === 0) {\n  return [{ json: { task: { task_id: 'T1', description: 'No tasks planned' }, project_id: projectId, project_goal: projectGoal } }];\n}\nreturn tasks.map(task => ({ json: { task, project_id: projectId, project_goal: projectGoal } }));"
+        "jsCode": "const tasks = $json.tasks || [];\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\nif (tasks.length === 0) {\n  return [{ json: { task: { task_id: 'T1', description: 'No tasks planned' }, project_id: projectId, project_goal: projectGoal } }];\n}\nreturn tasks.map(task => ({ json: { task, project_id: projectId, project_goal: projectGoal } }));"
       },
       "id": "spread-tasks",
       "name": "Spread Tasks",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1250, 300]
-    },
-    {
-      "parameters": {
-        "batchSize": 1,
-        "options": {}
-      },
-      "id": "loop-tasks",
-      "name": "Loop Tasks",
-      "type": "n8n-nodes-base.splitInBatches",
-      "typeVersion": 3,
-      "position": [1450, 300]
     },
     {
       "parameters": {
@@ -89,27 +78,18 @@
       "name": "Call Task Processor",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [1650, 160]
+      "position": [1450, 300]
     },
     {
       "parameters": {
-        "jsCode": "const staticData = this.getWorkflowStaticData('global');\nif (!staticData.taskResults) staticData.taskResults = [];\nstaticData.taskResults.push($json);\nreturn [$json];"
-      },
-      "id": "collect-result",
-      "name": "Collect Task Result",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1850, 160]
-    },
-    {
-      "parameters": {
-        "jsCode": "const staticData = this.getWorkflowStaticData('global');\nconst taskResults = staticData.taskResults || [];\nstaticData.taskResults = null;\nconst projectId = staticData.currentProjectId || '';\nconst projectGoal = staticData.projectGoal || '';\nconst allFiles = [...new Set(taskResults.flatMap(r => r.files_written || []))];\nreturn [{ json: { task_results: taskResults, all_files: allFiles, project_id: projectId, project_goal: projectGoal } }];"
+        "mode": "runOnceForAllItems",
+        "jsCode": "const taskResults = $input.all().map(item => item.json);\nconst allFiles = [...new Set(taskResults.flatMap(r => r.files_written || []))];\nconst projectId = $('Prepare Planner Input').first().json.project_id;\nconst projectGoal = $('Prepare Planner Input').first().json.project_goal;\nreturn [{ json: { task_results: taskResults, all_files: allFiles, project_id: projectId, project_goal: projectGoal } }];"
       },
       "id": "aggregate-all",
       "name": "Aggregate All Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1650, 440]
+      "position": [1650, 300]
     },
     {
       "parameters": {
@@ -119,7 +99,7 @@
       "name": "Prepare Memory Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1850, 440]
+      "position": [1850, 300]
     },
     {
       "parameters": {
@@ -131,7 +111,7 @@
       "name": "Update Project Memory",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2050, 440]
+      "position": [2050, 300]
     },
     {
       "parameters": {
@@ -141,7 +121,7 @@
       "name": "Build Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2250, 440]
+      "position": [2250, 300]
     },
     {
       "parameters": {
@@ -153,7 +133,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [2450, 440]
+      "position": [2450, 300]
     }
   ],
   "connections": {
@@ -162,15 +142,8 @@
     "Init Project Memory": { "main": [[{ "node": "Prepare Planner Input", "type": "main", "index": 0 }]] },
     "Prepare Planner Input": { "main": [[{ "node": "Call Planner Agent", "type": "main", "index": 0 }]] },
     "Call Planner Agent": { "main": [[{ "node": "Spread Tasks", "type": "main", "index": 0 }]] },
-    "Spread Tasks": { "main": [[{ "node": "Loop Tasks", "type": "main", "index": 0 }]] },
-    "Loop Tasks": {
-      "main": [
-        [{ "node": "Call Task Processor", "type": "main", "index": 0 }],
-        [{ "node": "Aggregate All Results", "type": "main", "index": 0 }]
-      ]
-    },
-    "Call Task Processor": { "main": [[{ "node": "Collect Task Result", "type": "main", "index": 0 }]] },
-    "Collect Task Result": { "main": [[{ "node": "Loop Tasks", "type": "main", "index": 0 }]] },
+    "Spread Tasks": { "main": [[{ "node": "Call Task Processor", "type": "main", "index": 0 }]] },
+    "Call Task Processor": { "main": [[{ "node": "Aggregate All Results", "type": "main", "index": 0 }]] },
     "Aggregate All Results": { "main": [[{ "node": "Prepare Memory Update", "type": "main", "index": 0 }]] },
     "Prepare Memory Update": { "main": [[{ "node": "Update Project Memory", "type": "main", "index": 0 }]] },
     "Update Project Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] },

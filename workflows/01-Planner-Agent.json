@@ -1,5 +1,11 @@
 {
+  "updatedAt": "2026-03-16T06:08:56.882Z",
+  "createdAt": "2026-03-15T22:57:52.059Z",
+  "id": "LKSE2piUblirwruU",
   "name": "Planner Agent - Task Breakdown",
+  "description": null,
+  "active": false,
+  "isArchived": false,
   "nodes": [
     {
       "parameters": {},
@@ -7,17 +13,23 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [
+        250,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Senior Software Architect. Given this natural language request, break it down into structured tasks.\\n\\nRequest: ${message}\\n\\nRequirements:\\n- Each task should be independent and executable\\n- List dependencies for each task (other tasks that must complete first)\\n- Estimate complexity as low, medium, or high\\n- Output valid JSON array format with these fields per task:\\n  - task_id: unique identifier (e.g., TASK-001)\\n  - description: clear, actionable description\\n  - dependencies: array of other task_ids that must complete first (empty array if none)\\n  - complexity: low, medium, or high\\n\\nOutput ONLY the JSON array, no markdown formatting.`\n      }\n    ],\n    temperature: 0.3,\n    max_tokens: 2048\n  }\n}];"
+        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Break this request into structured tasks.\\n\\nRequest: ${message}\\n\\nOutput a JSON array. Each item must have:\\n- task_id: string like \"TASK-001\"\\n- description: clear actionable description\\n- dependencies: array of task_id strings (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\nOutput ONLY the JSON array, no other text.`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 2048\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [450, 300]
+      "position": [
+        450,
+        300
+      ]
     },
     {
       "parameters": {
@@ -26,37 +38,87 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json) }}",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}"
+            }
+          ]
+        }
       },
       "id": "llm-request",
       "name": "Call LM Studio",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [
+        650,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const content = $json.choices[0].message.content;\nlet tasks;\ntry {\n  tasks = JSON.parse(content);\n} catch (e) {\n  tasks = [{ raw_output: content }];\n}\nreturn [{ json: { tasks: tasks } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\nlet tasks;\ntry { tasks = JSON.parse(content); } catch (e) { tasks = [{ raw_output: content }]; }\nreturn [{ json: { tasks } }];"
       },
       "id": "parse-response",
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [850, 300]
+      "position": [
+        850,
+        300
+      ]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Request": {
-      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Call LM Studio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Call LM Studio": {
-      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "executionOrder": "v1"
-  }
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "8bff1d1f-d6da-4efe-a802-816c9bba6ae3",
+  "activeVersionId": null,
+  "versionCounter": 42,
+  "triggerCount": 0,
+  "tags": [],
+  "activeVersion": null
 }

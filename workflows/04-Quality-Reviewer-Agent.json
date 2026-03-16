@@ -1,5 +1,11 @@
 {
+  "updatedAt": "2026-03-16T06:08:57.058Z",
+  "createdAt": "2026-03-15T22:58:11.503Z",
+  "id": "HsFpnZ5q2SGLy2En",
   "name": "Quality Reviewer Agent - Check Code Quality",
+  "description": null,
+  "active": false,
+  "isArchived": false,
   "nodes": [
     {
       "parameters": {},
@@ -7,17 +13,23 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [
+        250,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const code = $json.code || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Principal Software Architect reviewing code quality and maintainability.\\nYour task is to evaluate documentation coverage, test completeness, and architectural decisions.\\n\\nCode to Review:\\n${code}\\n\\nReview Checklist:\\n- All public functions/classes have JSDoc/Docstring comments\\n- Unit tests cover critical paths (minimum 80% line coverage)\\n- Error handling comprehensive with custom error types\\n- Database queries optimized (no N+1 problems, indexes on foreign keys)\\n- Configuration externalized via environment variables\\n- Logging structured and appropriate log levels used\\n- API endpoints follow REST conventions (proper HTTP methods, status codes)\\n- React components use hooks correctly with no memory leaks\\n\\nOutput Format:\\nReturn valid JSON with these fields:\\n{\\n  \\\"quality_score\\\": number (1-10),\\n  \\\"strengths\\\": [array of positive observations],\\n  \\\"areas_for_improvement\\\": [array of improvement items],\\n  \\\"recommendations\\\": [array of general recommendations]\\n}\\n\\nFor each area for improvement include:\\n{\\n  \\\"area\\\": name of the issue,\\n  \\\"current_state\\\": description of current problem,\\n  \\\"target\\\": what should be achieved,\\n  \\\"fix\\\": specific remediation steps\\n}\\n\\nOutput ONLY the JSON, no markdown formatting.`\n      }\n    ],\n    temperature: 0.5,\n    max_tokens: 2048\n  }\n}];"
+        "jsCode": "const files = $json.files || [];\nconst code = files.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n');\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Principal Software Architect. Review this code for quality.\\n\\nCode:\\n${code}\\n\\nReturn ONLY valid JSON:\\n{\"quality_score\":number,\"job_complete\":boolean,\"strengths\":[\"...\"],\"areas_for_improvement\":[{\"area\":\"...\",\"current_state\":\"...\",\"target\":\"...\",\"fix\":\"...\"}],\"recommendations\":[\"...\"]}`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 2048\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [450, 300]
+      "position": [
+        450,
+        300
+      ]
     },
     {
       "parameters": {
@@ -26,37 +38,87 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json) }}",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}"
+            }
+          ]
+        }
       },
       "id": "llm-request",
       "name": "Call LM Studio",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [
+        650,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const content = $json.choices[0].message.content;\nlet review;\ntry {\n  review = JSON.parse(content);\n} catch (e) {\n  review = { raw_output: content };\n}\nreturn [{ json: { quality_review: review } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\nlet review;\ntry { review = JSON.parse(content); } catch (e) { review = { raw_output: content }; }\nreturn [{ json: { quality_review: review, security_review: $('Execute Workflow Trigger').first().json.security_review, files: $('Execute Workflow Trigger').first().json.files } }];"
       },
       "id": "parse-response",
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [850, 300]
+      "position": [
+        850,
+        300
+      ]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Request": {
-      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Call LM Studio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Call LM Studio": {
-      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "executionOrder": "v1"
-  }
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "eaf0bee5-c8c4-4a7e-a213-ae70da1b75af",
+  "activeVersionId": null,
+  "versionCounter": 58,
+  "triggerCount": 0,
+  "tags": [],
+  "activeVersion": null
 }

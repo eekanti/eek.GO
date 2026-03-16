@@ -1,5 +1,11 @@
 {
+  "updatedAt": "2026-03-16T06:08:56.954Z",
+  "createdAt": "2026-03-15T22:58:11.411Z",
+  "id": "I80DcZVmNUaZVVMl",
   "name": "Code Writer Agent - Generate Code",
+  "description": null,
+  "active": false,
+  "isArchived": false,
   "nodes": [
     {
       "parameters": {},
@@ -7,17 +13,23 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [
+        250,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const taskDescription = $json.task?.description || $json.description || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [\n      {\n        role: 'user',\n        content: `You are a Senior Full-Stack Developer specializing in JavaScript/TypeScript with Node.js and React.\\n\\nTech Stack Configuration:\\n- Languages: TypeScript (strict mode), JavaScript, JSX\\n- Backend Framework: Node.js with Express.js or Fastify\\n- Frontend Framework: React with hooks (functional components)\\n- API Style: REST APIs with JSON payloads\\n- Database: PostgreSQL (with Prisma ORM preferred) or MongoDB (with Mongoose)\\n\\nSecurity Requirements (Standard Best Practices):\\n- All user inputs validated before processing\\n- JWT authentication with tokens expiring in 24 hours\\n- Password hashing using bcrypt (salt rounds >= 10)\\n- Rate limiting on all public endpoints\\n- CORS configured for known origins only\\n- No sensitive data in logs or error responses\\n\\nCode Quality Standards:\\n- Clean code with comprehensive comments and JSDoc/Docstrings\\n- All public functions, classes, and components must be documented\\n- Unit tests required (minimum 80% coverage) using Jest + React Testing Library\\n- Error handling with custom error classes\\n- Structured logging for debugging\\n\\nMVP/Prototype Focus:\\n- Prioritize speed of development over microservices architecture\\n- Use opinionated defaults where appropriate\\n- Include basic error handling (no need for complex retry logic)\\n- Focus on core functionality first, optimization later\\n\\nTask to Implement: ${taskDescription}\\n\\nOutput Format:\\n1. File path and name (relative to project root)\\n2. Complete file content with all imports at top\\n3. Brief explanation of key design decisions\\n4. Testing instructions (how to run tests for this feature/component)\\n5. Any environment variables that need configuration`\n      }\n    ],\n    temperature: 0.7,\n    max_tokens: 4096\n  }\n}];"
+        "jsCode": "const taskDescription = $json.task?.description || $json.description || '';\nconst existingFiles = $json.existing_files || [];\nconst existingFilesSection = existingFiles.length > 0\n  ? '\\n\\nEXISTING PROJECT FILES (modify or extend these rather than rewriting from scratch):\\n' +\n    existingFiles.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n')\n  : '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Full-Stack Developer. Output ONLY code files, no explanations.\\n\\nTech Stack: TypeScript, Node.js/Express, React/Vite, PostgreSQL/Prisma\\n\\nSecurity: JWT auth, bcrypt passwords, rate limiting, validated inputs, CORS\\n\\nFor EACH file output EXACTLY this format:\\n### path/to/file.ts\\n\\`\\`\\`ts\\n[complete file content]\\n\\`\\`\\`\\n\\nNo other text. No numbered lists. No explanations. Just the file blocks.${existingFilesSection}\\n\\nTask: ${taskDescription}`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 4096\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [450, 300]
+      "position": [
+        450,
+        300
+      ]
     },
     {
       "parameters": {
@@ -26,37 +38,87 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json) }}",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}"
+            }
+          ]
+        }
       },
       "id": "llm-request",
       "name": "Call LM Studio",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [
+        650,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const content = $json.choices[0].message.content;\nreturn [{ json: { code: content } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || '';\n// Strip thinking - handle both <think>...</think> and bare text ending with </think>\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|Dockerfile|gitignore))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path) && fileContent.trim().length > 20) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nreturn [{ json: { files } }];"
       },
       "id": "parse-response",
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [850, 300]
+      "position": [
+        850,
+        300
+      ]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{"node": "Build Request", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Request": {
-      "main": [[{"node": "Call LM Studio", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Call LM Studio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Call LM Studio": {
-      "main": [[{"node": "Parse Response", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "executionOrder": "v1"
-  }
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "558e86e5-85b3-44d3-952c-3ccea62577dd",
+  "activeVersionId": null,
+  "versionCounter": 52,
+  "triggerCount": 0,
+  "tags": [],
+  "activeVersion": null
 }
