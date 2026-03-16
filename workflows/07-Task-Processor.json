@@ -29,7 +29,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst existingFiles = $json.files || [];\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: trigger.previous_feedback || '',\n  existing_files: existingFiles\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst existingFiles = $json.files || [];\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: trigger.previous_feedback || '',\n  existing_files: existingFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
       },
       "id": "build-input-p1",
       "name": "Build Input P1",
@@ -106,7 +106,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\n// Merge: generated files override disk files at same path\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
       },
       "id": "build-fix-p2",
       "name": "Build Fix Input P2",
@@ -183,7 +183,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\n// Merge: generated files override disk files at same path\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
       },
       "id": "build-fix-p3",
       "name": "Build Fix Input P3",
