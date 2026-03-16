@@ -1,0 +1,187 @@
+{
+  "name": "Task Processor",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const task = $json.task || {};\nreturn [{\n  json: {\n    task: task,\n    project_goal: $json.project_goal || '',\n    previous_feedback: $json.previous_feedback || ''\n  }\n}];"
+      },
+      "id": "build-code-input",
+      "name": "Build Code Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-code-writer",
+      "name": "Call Code Writer",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "11TnwqDWMU7AmUSf", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-security",
+      "name": "Call Security Reviewer",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "HsFpnZ5q2SGLy2En", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-quality",
+      "name": "Call Quality Reviewer",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const secReview = $json.security_review || {};\nconst qualReview = $json.quality_review || {};\nconst originalFiles = $('Call Code Writer').first().json.files || [];\n\nconst criticalIssues = secReview.critical_issues || [];\nconst secScore = secReview.security_score;\nconst qualScore = qualReview.quality_score;\n\nconst hasSecIssues = criticalIssues.length > 0 || (secScore !== null && secScore < 6);\nconst hasQualIssues = qualScore !== null && qualScore < 6;\nconst needsFix = hasSecIssues || hasQualIssues;\n\nlet feedbackParts = [];\nif (hasSecIssues) {\n  feedbackParts.push('SECURITY ISSUES:\\n' + JSON.stringify(criticalIssues.concat(secReview.high_priority || []), null, 2));\n}\nif (hasQualIssues) {\n  feedbackParts.push('QUALITY ISSUES:\\n' + JSON.stringify(qualReview.areas_for_improvement || [], null, 2));\n}\n\nreturn [{\n  json: {\n    task: $('Build Code Input').first().json.task,\n    project_goal: $('Build Code Input').first().json.project_goal,\n    previous_feedback: feedbackParts.join('\\n\\n'),\n    original_files: originalFiles,\n    needs_fix: needsFix,\n    security_review: secReview,\n    quality_review: qualReview\n  }\n}];"
+      },
+      "id": "check-fix",
+      "name": "Check and Build Fix Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "fix-check",
+              "leftValue": "={{ $json.needs_fix }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-needs-fix",
+      "name": "Needs Fix?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-code-writer-fix",
+      "name": "Call Code Writer Fix",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1650, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { files: $json.files, security_review: $('Check and Build Fix Input').first().json.security_review, quality_review: $('Check and Build Fix Input').first().json.quality_review, fixed: true } }];"
+      },
+      "id": "mark-fixed",
+      "name": "Mark Fixed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    files: $json.original_files || [],\n    security_review: $json.security_review,\n    quality_review: $json.quality_review,\n    fixed: false\n  }\n}];"
+      },
+      "id": "pass-original",
+      "name": "Pass Original",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const files = $json.files || [];\nconst projectId = $('Execute Workflow Trigger').first().json.project_id;\nreturn [{\n  json: {\n    project_id: projectId,\n    files: files,\n    security_review: $json.security_review,\n    quality_review: $json.quality_review,\n    fixed: $json.fixed || false\n  }\n}];"
+      },
+      "id": "prepare-write",
+      "name": "Prepare Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-batch",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: $json.files }) }}",
+        "options": {}
+      },
+      "id": "write-files",
+      "name": "Write Files to Disk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const task = $('Build Code Input').first().json.task;\nconst writeResult = $json;\nreturn [{\n  json: {\n    task_id: task.task_id || 'unknown',\n    description: task.description || '',\n    files_written: (writeResult.files_written || []).map(f => f.path),\n    security_review: $json.security_review,\n    quality_review: $json.quality_review,\n    fixed: $json.fixed || false\n  }\n}];"
+      },
+      "id": "build-result",
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": { "main": [[{ "node": "Build Code Input", "type": "main", "index": 0 }]] },
+    "Build Code Input": { "main": [[{ "node": "Call Code Writer", "type": "main", "index": 0 }]] },
+    "Call Code Writer": { "main": [[{ "node": "Call Security Reviewer", "type": "main", "index": 0 }]] },
+    "Call Security Reviewer": { "main": [[{ "node": "Call Quality Reviewer", "type": "main", "index": 0 }]] },
+    "Call Quality Reviewer": { "main": [[{ "node": "Check and Build Fix Input", "type": "main", "index": 0 }]] },
+    "Check and Build Fix Input": { "main": [[{ "node": "Needs Fix?", "type": "main", "index": 0 }]] },
+    "Needs Fix?": {
+      "main": [
+        [{ "node": "Call Code Writer Fix", "type": "main", "index": 0 }],
+        [{ "node": "Pass Original", "type": "main", "index": 0 }]
+      ]
+    },
+    "Call Code Writer Fix": { "main": [[{ "node": "Mark Fixed", "type": "main", "index": 0 }]] },
+    "Mark Fixed": { "main": [[{ "node": "Prepare Write", "type": "main", "index": 0 }]] },
+    "Pass Original": { "main": [[{ "node": "Prepare Write", "type": "main", "index": 0 }]] },
+    "Prepare Write": { "main": [[{ "node": "Write Files to Disk", "type": "main", "index": 0 }]] },
+    "Write Files to Disk": { "main": [[{ "node": "Build Result", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

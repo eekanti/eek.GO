@@ -16,97 +16,132 @@
     },
     {
       "parameters": {
-        "jsCode": "return [{ json: { message: $json.body?.message || $json.message || '' } }];"
+        "jsCode": "const body = $json.body || $json;\nconst message = body.message || '';\nconst projectId = body.project_id || ('proj-' + Date.now());\nreturn [{ json: { message, project_id: projectId, operation: 'init', goal: message } }];"
       },
-      "id": "prepare-planner-input",
-      "name": "Prepare Planner Input",
+      "id": "extract-input",
+      "name": "Extract Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [450, 300]
     },
     {
       "parameters": {
-        "workflowId": "REPLACE_WITH_PLANNER_WORKFLOW_ID",
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "GYX1mqUEQtqkp9aQ", "mode": "id" },
         "options": {}
       },
-      "id": "call-planner",
-      "name": "Call Planner Agent",
+      "id": "init-memory",
+      "name": "Init Project Memory",
       "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1,
+      "typeVersion": 1.1,
       "position": [650, 300]
     },
     {
       "parameters": {
-        "jsCode": "const tasks = $json.tasks || [];\nconst firstTask = Array.isArray(tasks) ? tasks[0] : tasks;\nreturn [{ json: { task: firstTask } }];"
+        "jsCode": "const memory = $json;\nconst message = $('Extract Input').first().json.message;\nreturn [{ json: {\n  message: message,\n  project_goal: memory.goal || message,\n  project_id: memory.project_id\n} }];"
       },
-      "id": "prepare-codewriter-input",
-      "name": "Prepare Code Writer Input",
+      "id": "prepare-planner",
+      "name": "Prepare Planner Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [850, 300]
     },
     {
       "parameters": {
-        "workflowId": "REPLACE_WITH_CODE_WRITER_WORKFLOW_ID",
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "LKSE2piUblirwruU", "mode": "id" },
         "options": {}
       },
-      "id": "call-code-writer",
-      "name": "Call Code Writer Agent",
+      "id": "call-planner",
+      "name": "Call Planner Agent",
       "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1,
+      "typeVersion": 1.1,
       "position": [1050, 300]
     },
     {
       "parameters": {
-        "jsCode": "return [{ json: { code: $json.code || '' } }];"
+        "jsCode": "const tasks = $json.tasks || [];\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n\n// Init static data accumulator for this run\nconst staticData = this.getWorkflowStaticData('global');\nstaticData.taskResults = [];\nstaticData.currentProjectId = projectId;\nstaticData.projectGoal = projectGoal;\n\nif (tasks.length === 0) {\n  return [{ json: { task: { task_id: 'T1', description: 'No tasks planned' }, project_id: projectId, project_goal: projectGoal } }];\n}\nreturn tasks.map(task => ({ json: { task, project_id: projectId, project_goal: projectGoal } }));"
       },
-      "id": "prepare-security-input",
-      "name": "Prepare Security Input",
+      "id": "spread-tasks",
+      "name": "Spread Tasks",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1250, 300]
     },
     {
       "parameters": {
-        "workflowId": "REPLACE_WITH_SECURITY_REVIEWER_WORKFLOW_ID",
+        "batchSize": 1,
         "options": {}
       },
-      "id": "call-security-reviewer",
-      "name": "Call Security Reviewer Agent",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1,
+      "id": "loop-tasks",
+      "name": "Loop Tasks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
       "position": [1450, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Re-inject the original code since Security Reviewer output doesn't pass it through\nconst code = $('Call Code Writer Agent').first().json.code || '';\nconst securityReview = $json.security_review;\nreturn [{ json: { code: code, security_review: securityReview } }];"
-      },
-      "id": "prepare-quality-input",
-      "name": "Prepare Quality Input",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1650, 300]
-    },
-    {
-      "parameters": {
-        "workflowId": "REPLACE_WITH_QUALITY_REVIEWER_WORKFLOW_ID",
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "7MbO1npw30NAmYYc", "mode": "id" },
         "options": {}
       },
-      "id": "call-quality-reviewer",
-      "name": "Call Quality Reviewer Agent",
+      "id": "call-task-processor",
+      "name": "Call Task Processor",
       "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1,
-      "position": [1850, 300]
+      "typeVersion": 1.1,
+      "position": [1650, 160]
     },
     {
       "parameters": {
-        "jsCode": "const qualityReview = $json.quality_review;\nconst securityReview = $('Prepare Quality Input').first().json.security_review;\nconst code = $('Call Code Writer Agent').first().json.code;\nconst tasks = $('Call Planner Agent').first().json.tasks;\n\nreturn [{\n  json: {\n    status: 'completed',\n    tasks: tasks,\n    generated_code: code,\n    security_review: securityReview,\n    quality_review: qualityReview\n  }\n}];"
+        "jsCode": "const staticData = this.getWorkflowStaticData('global');\nif (!staticData.taskResults) staticData.taskResults = [];\nstaticData.taskResults.push($json);\nreturn [$json];"
       },
-      "id": "aggregate-results",
-      "name": "Aggregate Results",
+      "id": "collect-result",
+      "name": "Collect Task Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2050, 300]
+      "position": [1850, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = this.getWorkflowStaticData('global');\nconst taskResults = staticData.taskResults || [];\nstaticData.taskResults = null;\nconst projectId = staticData.currentProjectId || '';\nconst projectGoal = staticData.projectGoal || '';\nconst allFiles = [...new Set(taskResults.flatMap(r => r.files_written || []))];\nreturn [{ json: { task_results: taskResults, all_files: allFiles, project_id: projectId, project_goal: projectGoal } }];"
+      },
+      "id": "aggregate-all",
+      "name": "Aggregate All Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const taskResults = $json.task_results || [];\nconst allFiles = $json.all_files || [];\nconst projectId = $json.project_id;\nconst completedTaskIds = taskResults.map(r => r.task_id);\nreturn [{ json: {\n  operation: 'set',\n  project_id: projectId,\n  state: {\n    status: 'active',\n    completed_tasks: completedTaskIds,\n    files: allFiles\n  }\n} }];"
+      },
+      "id": "prepare-memory-update",
+      "name": "Prepare Memory Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 440]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "GYX1mqUEQtqkp9aQ", "mode": "id" },
+        "options": {}
+      },
+      "id": "update-memory",
+      "name": "Update Project Memory",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [2050, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const memory = $json;\nconst aggregated = $('Aggregate All Results').first().json;\nreturn [{ json: {\n  status: 'completed',\n  project_id: memory.project_id,\n  project_goal: memory.goal,\n  tasks_completed: (aggregated.task_results || []).length,\n  task_results: aggregated.task_results || [],\n  files_written: memory.files || []\n} }];"
+      },
+      "id": "build-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 440]
     },
     {
       "parameters": {
@@ -118,42 +153,31 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [2250, 300]
+      "position": [2450, 440]
     }
   ],
   "connections": {
-    "Webhook": {
-      "main": [[{"node": "Prepare Planner Input", "type": "main", "index": 0}]]
+    "Webhook": { "main": [[{ "node": "Extract Input", "type": "main", "index": 0 }]] },
+    "Extract Input": { "main": [[{ "node": "Init Project Memory", "type": "main", "index": 0 }]] },
+    "Init Project Memory": { "main": [[{ "node": "Prepare Planner Input", "type": "main", "index": 0 }]] },
+    "Prepare Planner Input": { "main": [[{ "node": "Call Planner Agent", "type": "main", "index": 0 }]] },
+    "Call Planner Agent": { "main": [[{ "node": "Spread Tasks", "type": "main", "index": 0 }]] },
+    "Spread Tasks": { "main": [[{ "node": "Loop Tasks", "type": "main", "index": 0 }]] },
+    "Loop Tasks": {
+      "main": [
+        [{ "node": "Call Task Processor", "type": "main", "index": 0 }],
+        [{ "node": "Aggregate All Results", "type": "main", "index": 0 }]
+      ]
     },
-    "Prepare Planner Input": {
-      "main": [[{"node": "Call Planner Agent", "type": "main", "index": 0}]]
-    },
-    "Call Planner Agent": {
-      "main": [[{"node": "Prepare Code Writer Input", "type": "main", "index": 0}]]
-    },
-    "Prepare Code Writer Input": {
-      "main": [[{"node": "Call Code Writer Agent", "type": "main", "index": 0}]]
-    },
-    "Call Code Writer Agent": {
-      "main": [[{"node": "Prepare Security Input", "type": "main", "index": 0}]]
-    },
-    "Prepare Security Input": {
-      "main": [[{"node": "Call Security Reviewer Agent", "type": "main", "index": 0}]]
-    },
-    "Call Security Reviewer Agent": {
-      "main": [[{"node": "Prepare Quality Input", "type": "main", "index": 0}]]
-    },
-    "Prepare Quality Input": {
-      "main": [[{"node": "Call Quality Reviewer Agent", "type": "main", "index": 0}]]
-    },
-    "Call Quality Reviewer Agent": {
-      "main": [[{"node": "Aggregate Results", "type": "main", "index": 0}]]
-    },
-    "Aggregate Results": {
-      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
-    }
+    "Call Task Processor": { "main": [[{ "node": "Collect Task Result", "type": "main", "index": 0 }]] },
+    "Collect Task Result": { "main": [[{ "node": "Loop Tasks", "type": "main", "index": 0 }]] },
+    "Aggregate All Results": { "main": [[{ "node": "Prepare Memory Update", "type": "main", "index": 0 }]] },
+    "Prepare Memory Update": { "main": [[{ "node": "Update Project Memory", "type": "main", "index": 0 }]] },
+    "Update Project Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] },
+    "Build Response": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
   }
 }

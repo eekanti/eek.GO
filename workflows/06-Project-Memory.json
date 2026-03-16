@@ -1,0 +1,32 @@
+{
+  "name": "Project Memory",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const operation = $json.operation || 'get';\nconst projectId = $json.project_id;\nif (!projectId) return [{ json: { error: 'project_id required' } }];\n\nconst store = this.getWorkflowStaticData('global');\n\nif (operation === 'get') {\n  return [{ json: store[projectId] || { project_id: projectId, exists: false } }];\n}\n\nif (operation === 'init') {\n  if (store[projectId]) return [{ json: { ...store[projectId], already_exists: true } }];\n  store[projectId] = {\n    project_id: projectId,\n    goal: $json.goal || '',\n    status: 'active',\n    completed_tasks: [],\n    pending_tasks: [],\n    files: [],\n    created_at: new Date().toISOString(),\n    last_updated: new Date().toISOString()\n  };\n  return [{ json: store[projectId] }];\n}\n\nif (operation === 'set') {\n  const existing = store[projectId] || {};\n  store[projectId] = { ...existing, ...$json.state, project_id: projectId, last_updated: new Date().toISOString() };\n  return [{ json: store[projectId] }];\n}\n\nreturn [{ json: { error: `Unknown operation: ${operation}` } }];"
+      },
+      "id": "memory-ops",
+      "name": "Memory Operations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Memory Operations", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
