@@ -5,7 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "coding-agent",
-        "responseMode": "onReceived",
+        "responseMode": "lastNode",
         "options": {}
       },
       "id": "webhook-trigger",

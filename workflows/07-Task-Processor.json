@@ -75,7 +75,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nconst shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`)\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: !shouldStop,\n  feedback_for_next: feedback\n} }];"
+        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\n// Detect reviewer parse failures — if raw_output exists, review JSON was unparseable\nconst securityParseFailed = !!sr.raw_output;\nconst qualityParseFailed = !!qr.raw_output;\n// If both reviews parsed OK, apply normal gate logic\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nlet shouldStop;\nif (securityParseFailed && qualityParseFailed) {\n  // Both reviews failed to parse — accept the code as-is rather than looping with empty feedback\n  shouldStop = true;\n} else {\n  shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\n}\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`),\n  ...(securityParseFailed ? ['SECURITY REVIEW: Parser failed — review output manually'] : []),\n  ...(qualityParseFailed ? ['QUALITY REVIEW: Parser failed — review output manually'] : [])\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: !shouldStop,\n  feedback_for_next: feedback\n} }];"
       },
       "id": "quality-gate-1",
       "name": "Quality Gate 1",
@@ -106,7 +106,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst existingFiles = $('Read Existing Files').first().json.files || [];\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: existingFiles\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\n// Merge: generated files override disk files at same path\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles\n} }];"
       },
       "id": "build-fix-p2",
       "name": "Build Fix Input P2",
@@ -152,7 +152,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nconst shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`)\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: true,\n  feedback_for_next: feedback\n} }];"
+        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\nconst securityParseFailed = !!sr.raw_output;\nconst qualityParseFailed = !!qr.raw_output;\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nlet shouldStop;\nif (securityParseFailed && qualityParseFailed) {\n  shouldStop = true;\n} else {\n  shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\n}\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`),\n  ...(securityParseFailed ? ['SECURITY REVIEW: Parser failed — review output manually'] : []),\n  ...(qualityParseFailed ? ['QUALITY REVIEW: Parser failed — review output manually'] : [])\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: true,\n  feedback_for_next: feedback\n} }];"
       },
       "id": "quality-gate-2",
       "name": "Quality Gate 2",
@@ -183,7 +183,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst existingFiles = $('Read Existing Files').first().json.files || [];\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: existingFiles\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\n// Merge: generated files override disk files at same path\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles\n} }];"
       },
       "id": "build-fix-p3",
       "name": "Build Fix Input P3",
@@ -205,7 +205,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const files = $json.files || [];\nconst projectId = $('Execute Workflow Trigger').first().json.project_id;\nreturn [{ json: {\n  project_id: projectId,\n  files: files,\n  security_review: $json.security_review || null,\n  quality_review: $json.quality_review || null,\n  fixed: $json.fixed || false\n} }];"
+        "jsCode": "const files = $json.files || [];\nconst projectId = $('Execute Workflow Trigger').first().json.project_id;\n// For P3 path, reviews aren't available on $json — pull last known from Quality Gate 2 if available\nlet sr = $json.security_review || null;\nlet qr = $json.quality_review || null;\nlet fixed = $json.fixed || false;\ntry {\n  const gate2 = $('Quality Gate 2').first().json;\n  if (!sr) sr = gate2.security_review || null;\n  if (!qr) qr = gate2.quality_review || null;\n  fixed = true;\n} catch(e) { /* P1/P2 path — reviews already on $json */ }\nreturn [{ json: {\n  project_id: projectId,\n  files: files,\n  security_review: sr,\n  quality_review: qr,\n  fixed: fixed\n} }];"
       },
       "id": "prepare-write",
       "name": "Prepare Write",
