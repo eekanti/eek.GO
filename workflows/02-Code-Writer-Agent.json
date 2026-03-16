@@ -27,7 +27,11 @@
     },
     {
       "parameters": {
-        "model": "={{ $env.LOCAL_AI_MODEL || 'local-model' }}",
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.LOCAL_AI_MODEL || 'local-model' }}"
+        },
         "options": {
           "temperature": 0.7,
           "maxTokens": 16000,
