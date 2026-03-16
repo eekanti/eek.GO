@@ -20,7 +20,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Break this request into structured tasks.\\n\\nRequest: ${message}\\n\\nOutput a JSON array. Each item must have:\\n- task_id: string like \"TASK-001\"\\n- description: clear actionable description\\n- dependencies: array of task_id strings (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\nOutput ONLY the JSON array, no other text.`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 2048\n  }\n}];"
+        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Break this request into structured tasks.\\n\\nRequest: ${message}\\n\\nOutput a JSON array where each element has:\\n- task_id: string like \"TASK-001\"\\n- description: clear actionable description\\n- dependencies: array of task_id strings (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\nRULES:\\n- Output ONLY the raw JSON array starting with [ and ending with ]\\n- Do NOT wrap in XML tags, markdown code blocks, or any other wrapper\\n- Do NOT add explanations, reasoning, or any text before or after the JSON array`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 4096\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
@@ -60,7 +60,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\nlet tasks;\ntry { tasks = JSON.parse(content); } catch (e) { tasks = [{ raw_output: content }]; }\nreturn [{ json: { tasks } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\n// Strip XML task wrappers the model sometimes adds despite instructions\ncontent = content.replace(/<\\/?task>/g, '').trim();\n// Strip trailing reasoning/explanation lines\ncontent = content.replace(/\\n+(?:Reasoning|Note|Explanation):[\\s\\S]*/i, '').trim();\n// Strip markdown code block wrappers\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nlet tasks;\ntry {\n  const parsed = JSON.parse(content);\n  // Handle both a direct array and {tasks: [...]} shape\n  tasks = Array.isArray(parsed) ? parsed : (parsed.tasks || [parsed]);\n} catch (e) {\n  tasks = [{ raw_output: content }];\n}\nreturn [{ json: { tasks } }];"
       },
       "id": "parse-response",
       "name": "Parse Response",

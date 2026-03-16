@@ -5,7 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "coding-agent",
-        "responseMode": "responseNode",
+        "responseMode": "onReceived",
         "options": {}
       },
       "id": "webhook-trigger",
@@ -122,18 +122,6 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2250, 300]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify($json) }}",
-        "options": {}
-      },
-      "id": "respond-webhook",
-      "name": "Respond to Webhook",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [2450, 300]
     }
   ],
   "connections": {
@@ -146,8 +134,7 @@
     "Call Task Processor": { "main": [[{ "node": "Aggregate All Results", "type": "main", "index": 0 }]] },
     "Aggregate All Results": { "main": [[{ "node": "Prepare Memory Update", "type": "main", "index": 0 }]] },
     "Prepare Memory Update": { "main": [[{ "node": "Update Project Memory", "type": "main", "index": 0 }]] },
-    "Update Project Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] },
-    "Build Response": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+    "Update Project Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",
