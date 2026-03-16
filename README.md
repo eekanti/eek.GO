@@ -1,34 +1,39 @@
 # AI Coding Agents - Multi-Agent System
 
-A complete multi-agent coding assistant running locally via **n8n** + **LM Studio**. Agents work in sequence to plan, write, review, and return production-ready code.
+A complete multi-agent coding assistant running locally via **n8n** + **LM Studio**. Send a message describing what you want to build — the system plans, writes, reviews, fixes, and writes the files to disk automatically.
 
 ## Architecture
 
 ```
-POST /webhook/coding-agent
+POST /webhook/{workflowId}/webhook/coding-agent
         │
         ▼
 00-Master-Orchestrator
         │
-        ├─▶ 01-Planner Agent        → breaks request into structured tasks (JSON)
+        ├─▶ 06-Project-Memory     → loads or initializes persistent project state
         │
-        ├─▶ 02-Code Writer Agent    → generates TypeScript/JS/React code
+        ├─▶ 01-Planner Agent      → breaks request into structured tasks (JSON array)
         │
-        ├─▶ 03-Security Reviewer    → OWASP Top 10 review (returns JSON score + issues)
-        │
-        ├─▶ 04-Quality Reviewer     → docs, tests, architecture review (returns JSON score)
-        │
-        └─▶ Respond to Webhook      → aggregated JSON result
+        └─▶ [loop each task]
+               │
+               └─▶ 07-Task-Processor
+                       │
+                       ├─▶ 02-Code Writer Agent    → generates code as [{path, content}] JSON
+                       ├─▶ 03-Security Reviewer    → OWASP Top 10 review (JSON score + issues)
+                       ├─▶ 04-Quality Reviewer     → docs, tests, architecture review (JSON score)
+                       ├─▶ [if issues found] → re-runs Code Writer with feedback
+                       └─▶ File API               → writes files to /home/will/src/{project_id}/
 ```
 
-Error logging is available via **05-Error Logger Agent** — call it from the master if any agent fails.
+- **05-Error Logger** — available for error tracking; wire in manually if needed
+- **06-Project Memory** — persists goal, completed tasks, and file manifest across runs
+- **07-Task Processor** — runs the full code→review→fix→write pipeline per task
 
 ## Requirements
 
-- **n8n** running (Docker recommended — see `docker-compose.yml`)
+- **n8n** running on Docker (shared Docker network `shared_net`)
 - **LM Studio** running at `http://10.0.0.100:1234` with a model loaded and server started
-
-No n8n credentials or LangChain setup needed. All agents call LM Studio directly via HTTP Request nodes.
+- **File API** running on Docker (see `docker/stacks/file-api/`)
 
 ---
 
@@ -43,101 +48,117 @@ chmod +x deploy.sh
 sudo ./deploy.sh
 ```
 
-Open n8n at `http://localhost:5678`.
+### 2. Deploy File API
 
-### 2. Verify LM Studio
+```bash
+cd /docker/stacks/file-api
+# Set FILE_API_TOKEN in your .env
+docker compose up -d
+```
 
-Confirm the server is running and a model is loaded:
+The File API mounts `/home/will/src` as `/projects` inside the container. Generated project files are written to `/home/will/src/{project_id}/`.
+
+### 3. Verify LM Studio
 
 ```bash
 curl http://10.0.0.100:1234/v1/models
 ```
 
-You should see your loaded model in the response. The workflows use `"model": "local-model"` — update the `Build Request` Code node in each workflow if your model identifier is different.
+The workflows use `qwen/qwen3.5-35b-a3b`. Update the `Build Request` Code node in each workflow if your model identifier differs. All prompts end with `/nothink` to suppress chain-of-thought tokens.
 
 ---
 
 ## Import Workflows
 
-Import in this order so the Master can reference the correct workflow IDs:
+Import in this order so the Master Orchestrator can reference the correct workflow IDs:
 
 | Order | File | Purpose |
 |-------|------|---------|
 | 1 | `workflows/01-Planner-Agent.json` | Task breakdown |
-| 2 | `workflows/02-Code-Writer-Agent.json` | Code generation |
+| 2 | `workflows/02-Code-Writer-Agent.json` | Code generation (outputs `[{path, content}]`) |
 | 3 | `workflows/03-Security-Reviewer-Agent.json` | Security review |
 | 4 | `workflows/04-Quality-Reviewer-Agent.json` | Quality review |
 | 5 | `workflows/05-Error-Logger-Agent.json` | Error logging |
-| 6 | `workflows/00-Master-Orchestrator.json` | Entry point (import last) |
+| 6 | `workflows/06-Project-Memory.json` | Persistent project state |
+| 7 | `workflows/07-Task-Processor.json` | Per-task pipeline with retry |
+| 8 | `workflows/00-Master-Orchestrator.json` | Entry point (import last) |
 
-To import each workflow in n8n:
-1. Click **"Add Workflow"** → **"Import from File"** (or paste JSON)
-2. Activate the workflow after import
-
-### Wire up the Master Orchestrator
-
-After importing all sub-workflows, **note each workflow's ID** (visible in the URL when editing: `/workflow/1234`).
-
-Open `00-Master-Orchestrator` and replace the four placeholders in the Execute Workflow nodes:
-
-| Placeholder | Replace with |
-|-------------|-------------|
-| `REPLACE_WITH_PLANNER_WORKFLOW_ID` | ID of 01-Planner-Agent |
-| `REPLACE_WITH_CODE_WRITER_WORKFLOW_ID` | ID of 02-Code-Writer-Agent |
-| `REPLACE_WITH_SECURITY_REVIEWER_WORKFLOW_ID` | ID of 03-Security-Reviewer-Agent |
-| `REPLACE_WITH_QUALITY_REVIEWER_WORKFLOW_ID` | ID of 04-Quality-Reviewer-Agent |
-
-You can edit the IDs directly in the Execute Workflow node settings in the n8n editor, or find/replace them in the JSON before importing.
+After importing, open each workflow and **activate** it. Then open `00-Master-Orchestrator` and update the workflow IDs in the Execute Workflow nodes to match the actual IDs assigned by your n8n instance.
 
 ---
 
 ## Usage
 
-Send a POST request to the webhook:
+### New project
 
 ```bash
-curl -X POST http://localhost:5678/webhook/coding-agent \
+curl -X POST https://n8n.hiwill.io/webhook/{masterOrchestratorId}/webhook/coding-agent \
   -H "Content-Type: application/json" \
   -d '{"message": "Create a user authentication API with login and registration endpoints"}'
 ```
 
-The response includes:
+> **Note:** n8n 2.10+ prepends the workflow ID to the webhook path. Check the Webhook node in the Master Orchestrator for the exact URL, or look it up in n8n's execution log.
+
+### Continue an existing project
+
+```bash
+curl -X POST https://n8n.hiwill.io/webhook/{masterOrchestratorId}/webhook/coding-agent \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Add JWT refresh token support", "project_id": "proj-1234567890"}'
+```
+
+Passing the same `project_id` loads the existing project goal and file manifest from memory, so the model has context about what was already built.
+
+### Response
 
 ```json
 {
   "status": "completed",
-  "tasks": [...],
-  "generated_code": "...",
-  "security_review": {
-    "security_score": 8,
-    "critical_issues": [],
-    "high_priority": [...],
-    "recommendations": [...]
-  },
-  "quality_review": {
-    "quality_score": 7,
-    "strengths": [...],
-    "areas_for_improvement": [...],
-    "recommendations": [...]
-  }
+  "project_id": "proj-1234567890",
+  "project_goal": "Create a user authentication API...",
+  "tasks_completed": 5,
+  "task_results": [
+    {
+      "task_id": "TASK-001",
+      "description": "Initialize Node.js project",
+      "files_written": ["package.json", "src/index.ts"],
+      "security_review": { "security_score": 9, "critical_issues": [] },
+      "quality_review": { "quality_score": 8 },
+      "fixed": false
+    }
+  ],
+  "files_written": ["package.json", "src/index.ts", "src/auth.ts", "..."]
 }
 ```
+
+Generated files are on disk at `/home/will/src/{project_id}/`.
 
 ---
 
 ## How the Workflows Work
 
-Each sub-workflow follows the same pattern:
+Each sub-workflow (01–04) follows the same pattern:
 
 ```
-Execute Workflow Trigger → Code (build HTTP body) → HTTP Request (LM Studio) → Code (parse response)
+Execute Workflow Trigger → Code (build LM Studio request) → HTTP Request → Code (parse response)
 ```
 
-- **No LangChain nodes** — LM Studio is called directly via HTTP Request at `http://10.0.0.100:1234/v1/chat/completions`
-- **No n8n credentials needed** — the URL is hardcoded in each workflow's HTTP Request node
-- Sub-workflows are called via `executeWorkflowTrigger` (not `manualTrigger`) so the Master can invoke them
+- **No LangChain nodes** — LM Studio called directly via HTTP Request at `http://10.0.0.100:1234/v1/chat/completions`
+- **Auth header** — `Authorization: Bearer <LM_STUDIO_API_KEY>` on every LM Studio call
+- **Qwen3 thinking model** — prompts end with `/nothink`; parsers fall back to `reasoning_content` if `content` is empty
 
-The Master re-injects the `code` field before calling the Quality Reviewer since the Security Reviewer's output does not pass through the original code.
+**Token limits:**
+
+| Agent | max_tokens |
+|-------|-----------|
+| Planner | 8192 |
+| Code Writer | 16384 |
+| Security Reviewer | 8192 |
+| Quality Reviewer | 8192 |
+
+**Task Processor retry logic:** if `security_score < 6`, `quality_score < 6`, or critical issues are found, the Code Writer is called a second time with the review feedback included in the prompt.
+
+**Project Memory** uses n8n's `getWorkflowStaticData('global')` for persistence — data survives n8n restarts as long as the workflow is not re-imported.
 
 ---
 
@@ -145,47 +166,55 @@ The Master re-injects the `code` field before calling the Quality Reviewer since
 
 ### Change the LLM model
 
-In each sub-workflow, open the **"Build Request"** Code node and change:
+In each sub-workflow, open the **Build Request** Code node and update:
 ```js
-model: 'local-model'
+model: 'qwen/qwen3.5-35b-a3b'
 ```
-to match the exact model identifier returned by `GET http://10.0.0.100:1234/v1/models`.
+to match your loaded model's identifier from `GET http://10.0.0.100:1234/v1/models`.
 
 ### Adjust temperature
 
-| Agent | Current Temperature | Effect |
-|-------|-------------------|--------|
-| Planner | 0.3 | Structured, deterministic |
-| Code Writer | 0.7 | Balanced creativity |
-| Security Reviewer | 0.3 | Conservative, catches more issues |
-| Quality Reviewer | 0.5 | Balanced assessment |
-
-Edit the `temperature` value in each workflow's **"Build Request"** Code node.
+| Agent | Temperature |
+|-------|------------|
+| Planner | 0.3 |
+| Code Writer | 0.7 |
+| Security Reviewer | 0.3 |
+| Quality Reviewer | 0.5 |
 
 ### Modify system prompts
 
-Edit the `content` string inside the **"Build Request"** Code node of each sub-workflow.
+Edit the `content` string in the **Build Request** Code node of each sub-workflow.
 
 ---
 
 ## Troubleshooting
 
-**LM Studio connection fails**
-```bash
-curl http://10.0.0.100:1234/v1/models
-# Should return a list of loaded models
-# If not: check LM Studio server is started and firewall allows port 1234
-```
+**Webhook returns 404**
 
-**Sub-workflow not found / Execute Workflow errors**
-- Confirm all 5 sub-workflows are imported and **activated**
-- Confirm the workflow IDs in the Master match the actual IDs in n8n
-
-**n8n won't start**
-```bash
-docker-compose logs -f n8n
-docker-compose restart
+n8n 2.10+ prepends the workflow ID to the webhook path. The correct URL format is:
 ```
+/webhook/{workflowId}/webhook/{path}
+```
+Find the exact URL in n8n → open the Master Orchestrator → click the Webhook node → copy the production URL.
+
+**LM Studio returns 401**
+
+Each HTTP Request node needs `Authorization: Bearer <your-api-key>` set in the Headers. Check the **Build LM Studio Request** HTTP node in each sub-workflow.
+
+**Empty responses from the model**
+
+Qwen3 thinking models put output in `reasoning_content`, leaving `content` empty. Fixes:
+1. Prompts end with `/nothink` to disable chain-of-thought
+2. All parse-response Code nodes fall back to `msg.reasoning_content` if `msg.content` is empty
+3. Increase `max_tokens` if responses are still truncated
+
+**Sub-workflow not found**
+
+Confirm all workflows are imported and **activated**, then verify the workflow IDs in the Execute Workflow nodes match your n8n instance.
+
+**File API returns 401**
+
+Check that `FILE_API_TOKEN` in your `.env` matches the Bearer token hardcoded in the **Write Files to Disk** HTTP node in `07-Task-Processor`.
 
 ---
 
@@ -197,14 +226,13 @@ n8n-team/
 ├── .env.example
 ├── deploy.sh
 ├── README.md
-├── QUICKSTART.md
-├── AI_CODING_AGENTS_OVERVIEW.md
-├── docs/
 └── workflows/
-    ├── 00-Master-Orchestrator.json       ← import last; wire up workflow IDs
+    ├── 00-Master-Orchestrator.json     ← import last; update workflow IDs
     ├── 01-Planner-Agent.json
     ├── 02-Code-Writer-Agent.json
     ├── 03-Security-Reviewer-Agent.json
     ├── 04-Quality-Reviewer-Agent.json
-    └── 05-Error-Logger-Agent.json
+    ├── 05-Error-Logger-Agent.json
+    ├── 06-Project-Memory.json
+    └── 07-Task-Processor.json
 ```
