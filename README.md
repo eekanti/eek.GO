@@ -57,6 +57,7 @@ POST /webhook/{workflowId}/webhook/coding-agent
 | **n8n** | Workflow engine | `/docker/stacks/n8n/` |
 | **LM Studio** | Local LLM server | `http://10.0.0.100:1234` (or your host) |
 | **File API** | File CRUD for generated code | `file-api/` (in this repo) |
+| **Forge** | Web dashboard — triggers jobs, shows progress | `forge/` (in this repo) |
 | **docky** | Context7 MCP for library docs | `http://docky:8811/mcp` (optional) |
 
 All services communicate over the `shared_net` Docker network.
@@ -81,7 +82,7 @@ chmod +x deploy.sh
 ```
 
 This will:
-- Build and start the file-api container
+- Build and start the file-api and forge containers
 - Restart n8n to pick up env changes
 - Import all workflows via the n8n API
 
@@ -109,13 +110,21 @@ All variables live in `workflows/.env`:
 | `FILE_API_TOKEN` | 06 | Bearer token for File API |
 | `MCP_GATEWAY_URL` | 07 | Context7 MCP endpoint (`http://docky:8811/mcp`) |
 | `N8N_API_KEY` | deploy.sh | n8n API key for workflow import |
-| `WF_*` | 00, 04, 06 | Cross-workflow references (set after import) |
+| `WF_*` | 00, 04, 06, Forge | Cross-workflow references (set after import) |
 
 These are accessed in workflows as `$env.VAR_NAME` in expressions and Code nodes.
 
 ## Usage
 
-### Start a new project
+### Via Forge (recommended)
+
+Open **http://localhost:3500** in your browser. Forge provides a web UI to:
+- Submit build requests
+- Track real-time progress across all agents
+- Browse projects and files written to disk
+- Continue existing projects with follow-up messages
+
+### Via curl
 
 ```bash
 curl -X POST http://localhost:5678/webhook/{workflowId}/webhook/coding-agent \
@@ -123,17 +132,9 @@ curl -X POST http://localhost:5678/webhook/{workflowId}/webhook/coding-agent \
   -d '{"message": "Create a REST API with auth endpoints"}'
 ```
 
+To continue an existing project, include `"project_id": "proj-..."` in the payload.
+
 > Find the exact webhook URL in n8n → Master Orchestrator → Webhook node → Production URL.
-
-### Continue an existing project
-
-```bash
-curl -X POST http://localhost:5678/webhook/{workflowId}/webhook/coding-agent \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Add JWT refresh tokens", "project_id": "proj-1234567890"}'
-```
-
-Passing the same `project_id` loads existing project state so the model has context about what was already built.
 
 ### Output
 
@@ -146,6 +147,12 @@ n8n-team/
 ├── file-api/                          ← File API service
 │   ├── app.js                           Express server: auth, CRUD, batch, search
 │   ├── Dockerfile
+│   ├── docker-compose.yml               Reads from ../workflows/.env
+│   └── package.json
+├── forge/                             ← Web dashboard (React + Tailwind)
+│   ├── server.js                        Express backend: triggers n8n, polls progress
+│   ├── src/                             React frontend (Vite build)
+│   ├── Dockerfile                       Multi-stage: builds React, serves from dist/
 │   ├── docker-compose.yml               Reads from ../workflows/.env
 │   └── package.json
 ├── workflows/

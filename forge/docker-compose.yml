@@ -1,0 +1,19 @@
+services:
+  forge:
+    build: .
+    container_name: forge
+    restart: unless-stopped
+    ports:
+      - "3500:3500"
+    env_file:
+      - ../workflows/.env
+    environment:
+      - N8N_URL=http://n8n:5678
+      - WEBHOOK_PATH=/webhook/coding-agent
+      - PORT=3500
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true

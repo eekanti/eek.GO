@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deployment Script for n8n Multi-Agent Coding Pipeline
-# Deploys: file-api, n8n, and workflow configuration
+# Deploys: file-api, forge, n8n, and workflow configuration
 
 set -e
 
@@ -73,6 +73,21 @@ if curl -sf -H "Authorization: Bearer ${FILE_API_TOKEN}" http://localhost:3456/h
   ok "file-api health check passed"
 else
   warn "file-api health check failed — it may still be starting"
+fi
+
+# --- Forge ---
+echo ""
+echo "Deploying forge dashboard..."
+
+cd "$SCRIPT_DIR/forge"
+$DOCKER_COMPOSE up -d --build
+ok "forge container running"
+
+sleep 2
+if curl -sf http://localhost:3500 &>/dev/null; then
+  ok "forge health check passed (http://localhost:3500)"
+else
+  warn "forge health check failed — it may still be starting"
 fi
 
 # --- n8n ---
@@ -152,5 +167,6 @@ echo "  1. Open n8n at http://localhost:5678"
 echo "  2. Activate all imported workflows"
 echo "  3. Update workflow IDs in workflows/.env (WF_* vars)"
 echo "  4. Verify LM Studio is running: curl ${LM_STUDIO_URL:-http://10.0.0.100:1234/v1/chat/completions}"
-echo "  5. Test: POST to the Master Orchestrator webhook (see README)"
+echo "  5. Open Forge at http://localhost:3500 to submit jobs"
+echo "  6. Or test via curl: POST to the Master Orchestrator webhook (see README)"
 echo ""
