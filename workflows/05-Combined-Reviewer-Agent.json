@@ -11,7 +11,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const files = $json.files || [];\nconst taskDesc = $json.task?.description || $json.description || '';\nconst projectGoal = $json.project_goal || '';\nconst code = files.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n');\nconst context = (projectGoal || taskDesc) ? `\\n\\nProject Goal: ${projectGoal}\\nCurrent Task: ${taskDesc}\\n` : '';\nreturn [{\n  json: {\n    model: 'qwen/qwen3.5-9b',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Code Reviewer. Evaluate this code for BOTH security and quality.${context}\\n\\nCode:\\n${code}\\n\\nReturn ONLY valid JSON (no markdown, no explanation):\\n{\"quality_score\":number,\"job_complete\":boolean,\"security_issues\":[{\"severity\":\"critical|high|medium\",\"issue\":\"...\",\"fix\":\"...\"}],\"quality_improvements\":[{\"area\":\"...\",\"fix\":\"...\"}]}\\n\\nRULES:\\n- quality_score: overall code quality 0-100\\n- job_complete: true ONLY if ALL requirements from the task are fully implemented\\n- security_issues: OWASP Top 10 vulnerabilities. Empty array if none found.\\n- quality_improvements: specific actionable fixes. Empty array if code is good.\\n- Do NOT flag style preferences, only real bugs and security issues.`\n    }],\n    temperature: 0.3,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 0.0,\n    max_tokens: 4096\n  }\n}];"
+        "jsCode": "const files = $json.files || [];\nconst taskDesc = $json.task?.description || $json.description || '';\nconst projectGoal = $json.project_goal || '';\nconst code = files.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n');\nconst context = (projectGoal || taskDesc) ? `\\n\\nProject Goal: ${projectGoal}\\nCurrent Task: ${taskDesc}\\n` : '';\nreturn [{\n  json: {\n    model: $env.REVIEWER_MODEL || 'qwen/qwen3.5-9b',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Code Reviewer. Evaluate this code for BOTH security and quality.${context}\\n\\nCode:\\n${code}\\n\\nReturn ONLY valid JSON (no markdown, no explanation):\\n{\"quality_score\":number,\"job_complete\":boolean,\"security_issues\":[{\"severity\":\"critical|high|medium\",\"issue\":\"...\",\"fix\":\"...\"}],\"quality_improvements\":[{\"area\":\"...\",\"fix\":\"...\"}]}\\n\\nRULES:\\n- quality_score: overall code quality 0-100\\n- job_complete: true ONLY if ALL requirements from the task are fully implemented\\n- security_issues: OWASP Top 10 vulnerabilities. Empty array if none found.\\n- quality_improvements: specific actionable fixes. Empty array if code is good.\\n- Do NOT flag style preferences, only real bugs and security issues.`\n    }],\n    temperature: 0.3,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 0.0,\n    max_tokens: 4096\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
@@ -22,7 +22,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://10.0.0.100:1234/v1/chat/completions",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json) }}",

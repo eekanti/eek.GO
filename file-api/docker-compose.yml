@@ -1,0 +1,19 @@
+services:
+  file-api:
+    build: .
+    container_name: file-api
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file:
+      - ../workflows/.env
+    environment:
+      - PROJECTS_ROOT=/projects
+      - PORT=3456
+    volumes:
+      - /home/will/src:/projects
+    networks:
+      - shared_net
+
+networks:
+  shared_net:
+    external: true

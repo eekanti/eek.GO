@@ -12,13 +12,13 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-content",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-content' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50"
+              "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}"
             }
           ]
         },
@@ -140,13 +140,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-batch",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-batch' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50"
+              "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}"
             },
             { "name": "Content-Type", "value": "application/json" }
           ]
