@@ -12,11 +12,12 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [250, 300]
+      "position": [250, 300],
+      "webhookId": "b3f7a2d1-4e89-4c12-9f56-a1b2c3d4e5f6"
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\nconst message = body.message || '';\nconst projectId = body.project_id || ('proj-' + Date.now());\nreturn [{ json: { message, project_id: projectId, operation: 'init', goal: message } }];"
+        "jsCode": "const query = $json.query || {};\nconst body = $json.body || $json;\nconst message = query.message || body.message || '';\nconst projectId = query.project_id || body.project_id || ('proj-' + Date.now());\nreturn [{ json: { message, project_id: projectId, operation: 'init', goal: message } }];"
       },
       "id": "extract-input",
       "name": "Extract Input",
@@ -60,7 +61,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const tasks = $json.tasks || [];\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\nif (tasks.length === 0) {\n  return [{ json: { task: { task_id: 'T1', description: 'No tasks planned' }, project_id: projectId, project_goal: projectGoal } }];\n}\n// Topological sort — respect task dependencies so dependent tasks run after their prerequisites\nconst taskMap = new Map();\ntasks.forEach(t => taskMap.set(t.task_id, t));\nconst inDegree = new Map();\nconst dependents = new Map();\ntasks.forEach(t => {\n  inDegree.set(t.task_id, 0);\n  dependents.set(t.task_id, []);\n});\ntasks.forEach(t => {\n  const deps = (t.dependencies || []).filter(d => taskMap.has(d));\n  inDegree.set(t.task_id, deps.length);\n  deps.forEach(d => dependents.get(d).push(t.task_id));\n});\nconst queue = [];\ntasks.forEach(t => {\n  if (inDegree.get(t.task_id) === 0) queue.push(t.task_id);\n});\nconst sorted = [];\nwhile (queue.length > 0) {\n  const id = queue.shift();\n  sorted.push(taskMap.get(id));\n  for (const dep of (dependents.get(id) || [])) {\n    inDegree.set(dep, inDegree.get(dep) - 1);\n    if (inDegree.get(dep) === 0) queue.push(dep);\n  }\n}\n// Circular or unresolvable deps — append remaining tasks so nothing is dropped\nif (sorted.length < tasks.length) {\n  const sortedIds = new Set(sorted.map(t => t.task_id));\n  tasks.forEach(t => { if (!sortedIds.has(t.task_id)) sorted.push(t); });\n}\nreturn sorted.map(task => ({ json: { task, project_id: projectId, project_goal: projectGoal } }));"
+        "jsCode": "const tasks = $json.tasks || [];\nconst planDocument = $json.plan_document || '';\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n// Topological sort\nconst taskMap = new Map();\ntasks.forEach(t => taskMap.set(t.task_id, t));\nconst inDegree = new Map();\nconst dependents = new Map();\ntasks.forEach(t => {\n  inDegree.set(t.task_id, 0);\n  dependents.set(t.task_id, []);\n});\ntasks.forEach(t => {\n  const deps = (t.dependencies || []).filter(d => taskMap.has(d));\n  inDegree.set(t.task_id, deps.length);\n  deps.forEach(d => dependents.get(d).push(t.task_id));\n});\nconst queue = [];\ntasks.forEach(t => {\n  if (inDegree.get(t.task_id) === 0) queue.push(t.task_id);\n});\nconst sorted = [];\nwhile (queue.length > 0) {\n  const id = queue.shift();\n  sorted.push(taskMap.get(id));\n  for (const dep of (dependents.get(id) || [])) {\n    inDegree.set(dep, inDegree.get(dep) - 1);\n    if (inDegree.get(dep) === 0) queue.push(dep);\n  }\n}\nif (sorted.length < tasks.length) {\n  const sortedIds = new Set(sorted.map(t => t.task_id));\n  tasks.forEach(t => { if (!sortedIds.has(t.task_id)) sorted.push(t); });\n}\n// Store all tasks in staticData for manual loop\nconst staticData = $getWorkflowStaticData('global');\nstaticData.pendingTasks = sorted.slice(1).map(t => ({ task: t, project_id: projectId, project_goal: projectGoal, plan_document: planDocument }));\nstaticData.taskResults = [];\nconst firstTask = sorted[0] || { task_id: 'T1', description: 'No tasks planned' };\nreturn [{ json: { task: firstTask, project_id: projectId, project_goal: projectGoal, plan_document: planDocument } }];"
       },
       "id": "spread-tasks",
       "name": "Spread Tasks",
@@ -82,6 +83,57 @@
     },
     {
       "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nif (!staticData.taskResults) staticData.taskResults = [];\nstaticData.taskResults.push($json);\nconst hasMore = (staticData.pendingTasks || []).length > 0;\nreturn [{ json: { ...($json), _hasMoreTasks: hasMore } }];"
+      },
+      "id": "store-result",
+      "name": "Store Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "has-more",
+              "leftValue": "={{ $json._hasMoreTasks }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-more",
+      "name": "Has More Tasks?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst pending = staticData.pendingTasks || [];\nconst next = pending.shift();\nstaticData.pendingTasks = pending;\nreturn [{ json: next }];"
+      },
+      "id": "get-next-task",
+      "name": "Get Next Task",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst results = staticData.taskResults || [];\nstaticData.taskResults = [];\nstaticData.pendingTasks = [];\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "collect-results",
+      "name": "Collect Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 450]
+    },
+    {
+      "parameters": {
         "mode": "runOnceForAllItems",
         "jsCode": "const taskResults = $input.all().map(item => item.json);\nconst allFiles = [...new Set(taskResults.flatMap(r => r.files_written || []))];\nconst projectId = $('Prepare Planner Input').first().json.project_id;\nconst projectGoal = $('Prepare Planner Input').first().json.project_goal;\nreturn [{ json: { task_results: taskResults, all_files: allFiles, project_id: projectId, project_goal: projectGoal } }];"
       },
@@ -89,17 +141,17 @@
       "name": "Aggregate All Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1650, 300]
+      "position": [2250, 450]
     },
     {
       "parameters": {
-        "jsCode": "const taskResults = $json.task_results || [];\nconst allFiles = $json.all_files || [];\nconst projectId = $json.project_id;\nconst completedTaskIds = taskResults.map(r => r.task_id);\nreturn [{ json: {\n  operation: 'set',\n  project_id: projectId,\n  state: {\n    status: 'active',\n    completed_tasks: completedTaskIds,\n    files: allFiles\n  }\n} }];"
+        "jsCode": "const taskResults = $json.task_results || [];\nconst allFiles = $json.all_files || [];\nconst projectId = $json.project_id;\nconst completedTaskIds = taskResults.map(r => r.task_id);\nreturn [{ json: {\n  operation: 'set',\n  project_id: projectId,\n  state: {\n    status: 'completed',\n    completed_tasks: completedTaskIds,\n    files: allFiles\n  }\n} }];"
       },
       "id": "prepare-memory-update",
       "name": "Prepare Memory Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1850, 300]
+      "position": [2450, 450]
     },
     {
       "parameters": {
@@ -111,7 +163,7 @@
       "name": "Update Project Memory",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.1,
-      "position": [2050, 300]
+      "position": [2650, 450]
     },
     {
       "parameters": {
@@ -121,7 +173,7 @@
       "name": "Build Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2250, 300]
+      "position": [2850, 450]
     }
   ],
   "connections": {
@@ -131,7 +183,16 @@
     "Prepare Planner Input": { "main": [[{ "node": "Call Planner Agent", "type": "main", "index": 0 }]] },
     "Call Planner Agent": { "main": [[{ "node": "Spread Tasks", "type": "main", "index": 0 }]] },
     "Spread Tasks": { "main": [[{ "node": "Call Task Processor", "type": "main", "index": 0 }]] },
-    "Call Task Processor": { "main": [[{ "node": "Aggregate All Results", "type": "main", "index": 0 }]] },
+    "Call Task Processor": { "main": [[{ "node": "Store Result", "type": "main", "index": 0 }]] },
+    "Store Result": { "main": [[{ "node": "Has More Tasks?", "type": "main", "index": 0 }]] },
+    "Has More Tasks?": {
+      "main": [
+        [{ "node": "Get Next Task", "type": "main", "index": 0 }],
+        [{ "node": "Collect Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Next Task": { "main": [[{ "node": "Call Task Processor", "type": "main", "index": 0 }]] },
+    "Collect Results": { "main": [[{ "node": "Aggregate All Results", "type": "main", "index": 0 }]] },
     "Aggregate All Results": { "main": [[{ "node": "Prepare Memory Update", "type": "main", "index": 0 }]] },
     "Prepare Memory Update": { "main": [[{ "node": "Update Project Memory", "type": "main", "index": 0 }]] },
     "Update Project Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] }

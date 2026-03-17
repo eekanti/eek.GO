@@ -15,10 +15,9 @@ curl -v http://10.0.0.100:1234/v1/models
 
 ### 401 Unauthorized from LM Studio
 
-- **Planner / Security / Quality reviewers:** Open the failing workflow, find the **Call LM Studio** HTTP Request node, and verify `Authorization: Bearer <your LM_STUDIO_API_KEY>`
-- **Code Writer:** Check the `LM Studio Chat Model` node credential in `02-Code-Writer-Agent`
+All agents (including Code Writer) use HTTP Request nodes with `Authorization: Bearer $env.LLM_API_KEY`.
 
-The key is stored as `LM_STUDIO_API_KEY` in `/docker/mcp/.env`.
+Set `LLM_API_KEY` in your n8n environment variables to match the API key configured in LM Studio → Server → API Key.
 
 ### Empty responses / blank content from model
 
@@ -64,22 +63,19 @@ If you see a version mismatch error, check the `typeVersion` field on the Execut
 
 ---
 
-## Code Writer / Redis Session Memory
+## Code Writer
 
-### Code Writer not recalling previous pass (P2/P3)
+### Code Writer not reflecting previous feedback (P2/P3)
 
-The Code Writer uses Redis Chat Memory with session key `{project_id}-{task_id}` and a 1-hour TTL. If P2/P3 sends feedback but the agent doesn't remember its prior code:
+The Code Writer uses direct HTTP (no Redis or session memory). On P2/P3 passes, the full task context and `previous_feedback` string are re-sent in the same request. If feedback isn't being applied:
 
-```bash
-# Verify Redis is running and accessible to n8n
-docker ps | grep redis
-```
+1. Open the failing execution in n8n
+2. Check the **Prepare Message** node output — confirm `previous_feedback` is populated and non-empty
+3. Check the **Call LM Studio** node response — confirm the model acknowledged the feedback
 
-Check the **Redis Chat Memory** node's credential in `02-Code-Writer-Agent` points to your Redis instance.
+### Model only outputs partial files
 
-### Session key collisions
-
-Each task generates a unique session key: `{project_id}-{task_id}`. If you reuse the same `project_id` and the same task IDs across runs within the TTL window (1 hour), the agent may pick up stale conversation history. To force a clean run, either use a new `project_id` or wait for the TTL to expire.
+The Code Writer sends a `FILES TO MODIFY` constraint from `task.files`. If the Planner didn't include a `files` array in the task, no constraint is sent and the model may produce extra files. Re-run the planner or manually add a `files` array to the task input.
 
 ---
 
@@ -87,11 +83,14 @@ Each task generates a unique session key: `{project_id}-{task_id}`. If you reuse
 
 ### Tasks stuck retrying
 
-The quality gate passes when `security_score ≥ 8` AND `critical_issues.length === 0`. If your model consistently scores below 8, lower the threshold in the **Quality Gate 1** and **Quality Gate 2** Code nodes in `07-Task-Processor`:
+The quality gate passes when `(job_complete === true OR quality_score >= 80) AND critical_issues.length === 0`.
+
+The gate primarily relies on the Quality Reviewer's `job_complete` flag. If your model never returns `job_complete: true`, change the condition in **Quality Gate 1** and **Quality Gate 2** Code nodes in `07-Task-Processor`:
+
 ```javascript
-quality_score >= 8 && critical_issues.length === 0
-// Change to, e.g.:
-quality_score >= 6 && critical_issues.length === 0
+shouldStop = (jobComplete || score >= 80) && criticalCount === 0;
+// Change to, e.g., score-only gate on a 0–10 scale:
+shouldStop = score >= 7 && criticalCount === 0;
 ```
 
 After 3 passes (P1 → P2 → P3) the processor writes files regardless.
@@ -106,7 +105,9 @@ If both Security and Quality reviewers return `raw_output` (parse failure), the 
 
 ### 401 from File API
 
-The Bearer token in the **Write Files to Disk** HTTP node in `07-Task-Processor` must match `FILE_API_TOKEN` in `/docker/stacks/file-api/.env`. Both should use the same value from `/docker/mcp/.env`.
+The Bearer token in the **Write Files to Disk** HTTP node in `07-Task-Processor` must match `FILE_API_TOKEN` in `/docker/stacks/file-api/.env`.
+
+When a write fails, the Task Processor automatically calls the Error Logger (05), which writes the error to `system-logs/_logs/errors/` via the File API.
 
 ### Files not appearing on disk
 
@@ -155,10 +156,10 @@ If n8n keeps restarting, check for OOM errors in the logs and add a memory limit
 
 ## Quick Checklist
 
-1. Is LM Studio server started and a model loaded?
+1. Is LM Studio server started with **both** models loaded (`qwen3.5-9b` and `qwen2.5-coder-32b-instruct`)?
 2. Can you `curl http://10.0.0.100:1234/v1/models` from the server?
-3. Is Redis running and accessible to n8n?
+3. Is `LLM_API_KEY` set in n8n's environment variables?
 4. Are all 8 workflows activated in n8n?
 5. Is the file-api container running?
 6. Does the webhook URL include the workflow ID prefix?
-7. Does `LOCAL_AI_MODEL` env var match your loaded model's identifier?
+7. Do the workflow IDs in Execute Workflow nodes match your n8n instance?

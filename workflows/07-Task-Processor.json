@@ -11,270 +11,113 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-content",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50" }
-          ]
-        },
-        "options": {}
+        "jsCode": "const trigger = $json;\nconst task = trigger.task || {};\nconst taskFiles = task.files || [];\nconst projectId = trigger.project_id;\nconst projectGoal = trigger.project_goal || '';\nconst planDocument = trigger.plan_document || '';\nconst chunkSize = 2;\nconst chunks = [];\nfor (let i = 0; i < taskFiles.length; i += chunkSize) {\n  chunks.push(taskFiles.slice(i, i + chunkSize));\n}\nif (chunks.length === 0) {\n  chunks.push([]);\n}\n// Store remaining chunks in staticData for manual loop\nconst staticData = $getWorkflowStaticData('global');\nstaticData.pendingChunks = chunks.slice(1).map(chunkFiles => ({\n  chunk_files: chunkFiles,\n  task: task,\n  project_id: projectId,\n  project_goal: projectGoal,\n  plan_document: planDocument\n}));\nstaticData.chunkResults = [];\n// Return first chunk\nreturn [{ json: {\n  chunk_files: chunks[0],\n  task: task,\n  project_id: projectId,\n  project_goal: projectGoal,\n  plan_document: planDocument\n} }];"
       },
-      "id": "read-existing-files",
-      "name": "Read Existing Files",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "split-chunks",
+      "name": "Split Into Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [450, 300]
     },
     {
       "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst existingFiles = $json.files || [];\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: trigger.previous_feedback || '',\n  existing_files: existingFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "unV7QKDC4J1a9nUL", "mode": "id" },
+        "options": {}
       },
-      "id": "build-input-p1",
-      "name": "Build Input P1",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "call-chunk-processor",
+      "name": "Call Chunk Processor",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
       "position": [650, 300]
     },
     {
       "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
-        "options": {}
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nif (!staticData.chunkResults) staticData.chunkResults = [];\nstaticData.chunkResults.push($json);\nconst hasMore = (staticData.pendingChunks || []).length > 0;\nreturn [{ json: { ...($json), _hasMoreChunks: hasMore } }];"
       },
-      "id": "call-code-writer-p1",
-      "name": "Call Code Writer P1",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
+      "id": "store-chunk-result",
+      "name": "Store Chunk Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [850, 300]
     },
     {
       "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "11TnwqDWMU7AmUSf", "mode": "id" },
-        "options": {}
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "has-more-chunks",
+              "leftValue": "={{ $json._hasMoreChunks }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
       },
-      "id": "call-security-p1",
-      "name": "Call Security P1",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
+      "id": "check-more-chunks",
+      "name": "Has More Chunks?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
       "position": [1050, 300]
     },
     {
       "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "HsFpnZ5q2SGLy2En", "mode": "id" },
-        "options": {}
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst pending = staticData.pendingChunks || [];\nconst next = pending.shift();\nstaticData.pendingChunks = pending;\nreturn [{ json: next }];"
       },
-      "id": "call-quality-p1",
-      "name": "Call Quality P1",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
-      "position": [1250, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\n// Detect reviewer parse failures — if raw_output exists, review JSON was unparseable\nconst securityParseFailed = !!sr.raw_output;\nconst qualityParseFailed = !!qr.raw_output;\n// If both reviews parsed OK, apply normal gate logic\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nlet shouldStop;\nif (securityParseFailed && qualityParseFailed) {\n  // Both reviews failed to parse — accept the code as-is rather than looping with empty feedback\n  shouldStop = true;\n} else {\n  shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\n}\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`),\n  ...(securityParseFailed ? ['SECURITY REVIEW: Parser failed — review output manually'] : []),\n  ...(qualityParseFailed ? ['QUALITY REVIEW: Parser failed — review output manually'] : [])\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: !shouldStop,\n  feedback_for_next: feedback\n} }];"
-      },
-      "id": "quality-gate-1",
-      "name": "Quality Gate 1",
+      "id": "get-next-chunk",
+      "name": "Get Next Chunk",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1450, 300]
+      "position": [1250, 200]
     },
     {
       "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
-          "conditions": [
-            {
-              "id": "stop-check-1",
-              "leftValue": "={{ $json.should_stop }}",
-              "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true" }
-            }
-          ],
-          "combinator": "and"
-        }
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst results = staticData.chunkResults || [];\nstaticData.chunkResults = [];\nstaticData.pendingChunks = [];\nconst allFilesWritten = [...new Set(results.flatMap(r => r.files_written || []))];\nreturn [{ json: { files_written: allFilesWritten, chunks_processed: results.length, success: results.every(r => r.success) } }];"
       },
-      "id": "check-done-1",
-      "name": "Done After P1?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1650, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
-      },
-      "id": "build-fix-p2",
-      "name": "Build Fix Input P2",
+      "id": "collect-chunk-results",
+      "name": "Collect Chunk Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1850, 480]
+      "position": [1250, 450]
     },
     {
       "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
-        "options": {}
-      },
-      "id": "call-code-writer-p2",
-      "name": "Call Code Writer P2",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
-      "position": [2050, 480]
-    },
-    {
-      "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "11TnwqDWMU7AmUSf", "mode": "id" },
-        "options": {}
-      },
-      "id": "call-security-p2",
-      "name": "Call Security P2",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
-      "position": [2250, 480]
-    },
-    {
-      "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "HsFpnZ5q2SGLy2En", "mode": "id" },
-        "options": {}
-      },
-      "id": "call-quality-p2",
-      "name": "Call Quality P2",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
-      "position": [2450, 480]
-    },
-    {
-      "parameters": {
-        "jsCode": "const qr = $json.quality_review || {};\nconst sr = $json.security_review || {};\nconst securityParseFailed = !!sr.raw_output;\nconst qualityParseFailed = !!qr.raw_output;\nconst score = qr.quality_score || 0;\nconst jobComplete = qr.job_complete === true;\nconst criticalCount = (sr.critical_issues || []).length;\nlet shouldStop;\nif (securityParseFailed && qualityParseFailed) {\n  shouldStop = true;\n} else {\n  shouldStop = jobComplete || (score >= 8 && criticalCount === 0);\n}\nconst feedback = [\n  ...(sr.critical_issues || []).map(i => `SECURITY CRITICAL: ${i.issue} → ${i.fix}`),\n  ...(sr.high_priority || []).map(i => `SECURITY HIGH: ${i.issue} → ${i.fix}`),\n  ...(qr.areas_for_improvement || []).map(a => `QUALITY: ${a.area} → ${a.fix}`),\n  ...(securityParseFailed ? ['SECURITY REVIEW: Parser failed — review output manually'] : []),\n  ...(qualityParseFailed ? ['QUALITY REVIEW: Parser failed — review output manually'] : [])\n].join('\\n');\nreturn [{ json: {\n  should_stop: shouldStop,\n  files: $json.files || [],\n  security_review: sr,\n  quality_review: qr,\n  fixed: true,\n  feedback_for_next: feedback\n} }];"
-      },
-      "id": "quality-gate-2",
-      "name": "Quality Gate 2",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2650, 480]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
-          "conditions": [
-            {
-              "id": "stop-check-2",
-              "leftValue": "={{ $json.should_stop }}",
-              "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true" }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-done-2",
-      "name": "Done After P2?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [2850, 480]
-    },
-    {
-      "parameters": {
-        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\nconst fileMap = new Map();\ndiskFiles.forEach(f => fileMap.set(f.path, f));\ngeneratedFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = Array.from(fileMap.values());\nconst sessionId = `${trigger.project_id || 'proj'}-${(trigger.task || {}).task_id || 'default'}`;\nreturn [{ json: {\n  task: trigger.task || {},\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback_for_next,\n  existing_files: mergedFiles,\n  session_id: sessionId,\n  project_id: trigger.project_id\n} }];"
-      },
-      "id": "build-fix-p3",
-      "name": "Build Fix Input P3",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [3050, 660]
-    },
-    {
-      "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
-        "options": {}
-      },
-      "id": "call-code-writer-p3",
-      "name": "Call Code Writer P3",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.1,
-      "position": [3250, 660]
-    },
-    {
-      "parameters": {
-        "jsCode": "const files = $json.files || [];\nconst projectId = $('Execute Workflow Trigger').first().json.project_id;\n// For P3 path, reviews aren't available on $json — pull last known from Quality Gate 2 if available\nlet sr = $json.security_review || null;\nlet qr = $json.quality_review || null;\nlet fixed = $json.fixed || false;\ntry {\n  const gate2 = $('Quality Gate 2').first().json;\n  if (!sr) sr = gate2.security_review || null;\n  if (!qr) qr = gate2.quality_review || null;\n  fixed = true;\n} catch(e) { /* P1/P2 path — reviews already on $json */ }\nreturn [{ json: {\n  project_id: projectId,\n  files: files,\n  security_review: sr,\n  quality_review: qr,\n  fixed: fixed\n} }];"
-      },
-      "id": "prepare-write",
-      "name": "Prepare Write",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [3450, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-batch",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ files: $json.files }) }}",
-        "options": {}
-      },
-      "id": "write-files",
-      "name": "Write Files to Disk",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [3650, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const task = $('Build Input P1').first().json.task;\nconst writeResult = $json;\nreturn [{ json: {\n  task_id: task.task_id || 'unknown',\n  description: task.description || '',\n  files_written: (writeResult.files_written || []).map(f => f.path),\n  security_review: $json.security_review,\n  quality_review: $json.quality_review,\n  fixed: $json.fixed || false\n} }];"
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst task = trigger.task || {};\nconst aggregated = $json;\nreturn [{ json: {\n  task_id: task.task_id || 'unknown',\n  description: task.description || '',\n  files_written: aggregated.files_written || [],\n  chunks_processed: aggregated.chunks_processed || 0,\n  fixed: false\n} }];"
       },
       "id": "build-result",
       "name": "Build Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3850, 300]
+      "position": [1450, 450]
     }
   ],
   "connections": {
-    "Execute Workflow Trigger": { "main": [[{ "node": "Read Existing Files", "type": "main", "index": 0 }]] },
-    "Read Existing Files": { "main": [[{ "node": "Build Input P1", "type": "main", "index": 0 }]] },
-    "Build Input P1": { "main": [[{ "node": "Call Code Writer P1", "type": "main", "index": 0 }]] },
-    "Call Code Writer P1": { "main": [[{ "node": "Call Security P1", "type": "main", "index": 0 }]] },
-    "Call Security P1": { "main": [[{ "node": "Call Quality P1", "type": "main", "index": 0 }]] },
-    "Call Quality P1": { "main": [[{ "node": "Quality Gate 1", "type": "main", "index": 0 }]] },
-    "Quality Gate 1": { "main": [[{ "node": "Done After P1?", "type": "main", "index": 0 }]] },
-    "Done After P1?": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Split Into Chunks", "type": "main", "index": 0 }]]
+    },
+    "Split Into Chunks": {
+      "main": [[{ "node": "Call Chunk Processor", "type": "main", "index": 0 }]]
+    },
+    "Call Chunk Processor": {
+      "main": [[{ "node": "Store Chunk Result", "type": "main", "index": 0 }]]
+    },
+    "Store Chunk Result": {
+      "main": [[{ "node": "Has More Chunks?", "type": "main", "index": 0 }]]
+    },
+    "Has More Chunks?": {
       "main": [
-        [{ "node": "Prepare Write", "type": "main", "index": 0 }],
-        [{ "node": "Build Fix Input P2", "type": "main", "index": 0 }]
+        [{ "node": "Get Next Chunk", "type": "main", "index": 0 }],
+        [{ "node": "Collect Chunk Results", "type": "main", "index": 0 }]
       ]
     },
-    "Build Fix Input P2": { "main": [[{ "node": "Call Code Writer P2", "type": "main", "index": 0 }]] },
-    "Call Code Writer P2": { "main": [[{ "node": "Call Security P2", "type": "main", "index": 0 }]] },
-    "Call Security P2": { "main": [[{ "node": "Call Quality P2", "type": "main", "index": 0 }]] },
-    "Call Quality P2": { "main": [[{ "node": "Quality Gate 2", "type": "main", "index": 0 }]] },
-    "Quality Gate 2": { "main": [[{ "node": "Done After P2?", "type": "main", "index": 0 }]] },
-    "Done After P2?": {
-      "main": [
-        [{ "node": "Prepare Write", "type": "main", "index": 0 }],
-        [{ "node": "Build Fix Input P3", "type": "main", "index": 0 }]
-      ]
+    "Get Next Chunk": {
+      "main": [[{ "node": "Call Chunk Processor", "type": "main", "index": 0 }]]
     },
-    "Build Fix Input P3": { "main": [[{ "node": "Call Code Writer P3", "type": "main", "index": 0 }]] },
-    "Call Code Writer P3": { "main": [[{ "node": "Prepare Write", "type": "main", "index": 0 }]] },
-    "Prepare Write": { "main": [[{ "node": "Write Files to Disk", "type": "main", "index": 0 }]] },
-    "Write Files to Disk": { "main": [[{ "node": "Build Result", "type": "main", "index": 0 }]] }
+    "Collect Chunk Results": {
+      "main": [[{ "node": "Build Result", "type": "main", "index": 0 }]]
+    }
   },
   "settings": {
     "executionOrder": "v1",

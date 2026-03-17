@@ -1,11 +1,5 @@
 {
-  "updatedAt": "2026-03-16T06:08:56.882Z",
-  "createdAt": "2026-03-15T22:57:52.059Z",
-  "id": "LKSE2piUblirwruU",
   "name": "Planner Agent - Task Breakdown",
-  "description": null,
-  "active": false,
-  "isArchived": false,
   "nodes": [
     {
       "parameters": {},
@@ -13,23 +7,17 @@
       "name": "Execute Workflow Trigger",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1,
-      "position": [
-        250,
-        300
-      ]
+      "position": [250, 300]
     },
     {
       "parameters": {
-        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: $env.LOCAL_AI_MODEL || 'local-model',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Break this request into structured tasks.\\n\\nRequest: ${message}\\n\\nOutput a JSON array where each element has:\\n- task_id: string like \"TASK-001\"\\n- description: clear actionable description\\n- dependencies: array of task_id strings (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\nRULES:\\n- Output ONLY the raw JSON array starting with [ and ending with ]\\n- Do NOT wrap in XML tags, markdown code blocks, or any other wrapper\\n- Do NOT add explanations, reasoning, or any text before or after the JSON array`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 4096\n  }\n}];"
+        "jsCode": "const message = $json.message || $json.body?.message || '';\nreturn [{\n  json: {\n    model: 'qwen/qwen3.5-9b',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Your job is to break a coding request into MULTIPLE structured tasks. Each task will be handled by a separate coder who writes files in batches of 2.\\n\\nRequest: ${message}\\n\\nOutput a JSON object with two fields:\\n\\n1. \"tasks\": array of task objects. IMPORTANT: You MUST create multiple tasks. Group files by concern (e.g. styles in one task, frontend components in another, backend routes in another, config/package.json in another). Each task has:\\n- task_id: string like \"TASK-001\"\\n- description: detailed actionable description of what to implement, including specific requirements, color values, component names, API endpoints, and behavior. The coder cannot see the original request \\u2014 your description is all they get.\\n- files: array of exact file paths to create or modify. List EVERY file this task needs \\u2014 the coder can ONLY write files listed here. Be precise with paths (e.g. \"client/src/App.tsx\", not \"App.tsx\").\\n- dependencies: array of task_id strings this task depends on (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\n2. \"plan_document\": a concise markdown string (under 2000 chars) summarizing the architecture approach, shared interfaces, design patterns, and constraints.\\n\\nRULES:\\n- NEVER put all files in a single task. Split by concern: styles, components, routes, config, etc.\\n- Each task should touch at most 3-4 files\\n- The description must be SELF-CONTAINED \\u2014 include ALL details the coder needs (colors, class names, API contracts, state management, imports)\\n- Do NOT invent npm packages that may not exist \\u2014 prefer CSS-only solutions unless the user specifically names a real package\\n- Output ONLY the raw JSON object starting with { and ending with }\\n- No markdown, no XML, no explanation \\u2014 ONLY the JSON`\n    }],\n    temperature: 0.7,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 1.5,\n    max_tokens: 8192\n  }\n}];"
       },
       "id": "build-request",
       "name": "Build Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        450,
-        300
-      ]
+      "position": [450, 300]
     },
     {
       "parameters": {
@@ -53,72 +41,32 @@
       "name": "Call LM Studio",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        650,
-        300
-      ]
+      "position": [650, 300]
     },
     {
       "parameters": {
-        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\n// Strip XML task wrappers the model sometimes adds despite instructions\ncontent = content.replace(/<\\/?task>/g, '').trim();\n// Strip trailing reasoning/explanation lines\ncontent = content.replace(/\\n+(?:Reasoning|Note|Explanation):[\\s\\S]*/i, '').trim();\n// Strip markdown code block wrappers\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nlet tasks;\ntry {\n  const parsed = JSON.parse(content);\n  // Handle both a direct array and {tasks: [...]} shape\n  tasks = Array.isArray(parsed) ? parsed : (parsed.tasks || [parsed]);\n} catch (e) {\n  tasks = [{ raw_output: content }];\n}\nreturn [{ json: { tasks } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/<\\/?task>/g, '').trim();\ncontent = content.replace(/\\n+(?:Reasoning|Note|Explanation):[\\s\\S]*/i, '').trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nlet tasks, planDocument;\ntry {\n  const parsed = JSON.parse(content);\n  if (Array.isArray(parsed)) {\n    tasks = parsed;\n    planDocument = '';\n  } else {\n    tasks = parsed.tasks || [parsed];\n    planDocument = parsed.plan_document || '';\n  }\n} catch (e) {\n  tasks = [{ task_id: 'TASK-FALLBACK-' + Date.now(), description: content, dependencies: [], complexity: 'high', raw_output: content }];\n  planDocument = '';\n}\nreturn [{ json: { tasks, plan_document: planDocument } }];"
       },
       "id": "parse-response",
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        850,
-        300
-      ]
+      "position": [850, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [
-        [
-          {
-            "node": "Build Request",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Build Request", "type": "main", "index": 0 }]]
     },
     "Build Request": {
-      "main": [
-        [
-          {
-            "node": "Call LM Studio",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Call LM Studio", "type": "main", "index": 0 }]]
     },
     "Call LM Studio": {
-      "main": [
-        [
-          {
-            "node": "Parse Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
     "executionOrder": "v1",
-    "callerPolicy": "workflowsFromSameOwner",
-    "availableInMCP": false
-  },
-  "staticData": null,
-  "meta": null,
-  "pinData": null,
-  "versionId": "8bff1d1f-d6da-4efe-a802-816c9bba6ae3",
-  "activeVersionId": null,
-  "versionCounter": 42,
-  "triggerCount": 0,
-  "tags": [],
-  "activeVersion": null
+    "callerPolicy": "workflowsFromSameOwner"
+  }
 }

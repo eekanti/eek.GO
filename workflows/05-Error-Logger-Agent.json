@@ -18,11 +18,49 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://file-api:3456/projects/system-logs/files-batch",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: [{ path: '_logs/errors/' + $json.timestamp.replace(/[:.]/g, '-') + '.json', content: JSON.stringify($json, null, 2) }] }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "write-error-log",
+      "name": "Write Error Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const logged = $('Extract Error Details').first().json;\nreturn [{ json: { status: 'error_logged', logged } }];"
+      },
+      "id": "return-status",
+      "name": "Return Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
       "main": [[{"node": "Extract Error Details", "type": "main", "index": 0}]]
+    },
+    "Extract Error Details": {
+      "main": [[{"node": "Write Error Log", "type": "main", "index": 0}]]
+    },
+    "Write Error Log": {
+      "main": [[{"node": "Return Status", "type": "main", "index": 0}]]
     }
   },
   "settings": {

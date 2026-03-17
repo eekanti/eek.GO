@@ -1,0 +1,72 @@
+{
+  "name": "Combined Reviewer Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-node",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const files = $json.files || [];\nconst taskDesc = $json.task?.description || $json.description || '';\nconst projectGoal = $json.project_goal || '';\nconst code = files.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n');\nconst context = (projectGoal || taskDesc) ? `\\n\\nProject Goal: ${projectGoal}\\nCurrent Task: ${taskDesc}\\n` : '';\nreturn [{\n  json: {\n    model: 'qwen/qwen3.5-9b',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Code Reviewer. Evaluate this code for BOTH security and quality.${context}\\n\\nCode:\\n${code}\\n\\nReturn ONLY valid JSON (no markdown, no explanation):\\n{\"quality_score\":number,\"job_complete\":boolean,\"security_issues\":[{\"severity\":\"critical|high|medium\",\"issue\":\"...\",\"fix\":\"...\"}],\"quality_improvements\":[{\"area\":\"...\",\"fix\":\"...\"}]}\\n\\nRULES:\\n- quality_score: overall code quality 0-100\\n- job_complete: true ONLY if ALL requirements from the task are fully implemented\\n- security_issues: OWASP Top 10 vulnerabilities. Empty array if none found.\\n- quality_improvements: specific actionable fixes. Empty array if code is good.\\n- Do NOT flag style preferences, only real bugs and security issues.`\n    }],\n    temperature: 0.3,\n    top_p: 0.8,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 0.0,\n    max_tokens: 4096\n  }\n}];"
+      },
+      "id": "build-request",
+      "name": "Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://10.0.0.100:1234/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 120000 },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "llm-request",
+      "name": "Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices[0].message.content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nconst jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\nlet review;\ntry { review = JSON.parse(jsonMatch ? jsonMatch[0] : content); } catch (e) { review = { raw_output: content }; }\nconst trigger = $('Execute Workflow Trigger').first().json;\nreturn [{ json: { review, files: trigger.files, task: trigger.task, project_goal: trigger.project_goal } }];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Build Request", "type": "main", "index": 0 }]]
+    },
+    "Build Request": {
+      "main": [[{ "node": "Call LM Studio", "type": "main", "index": 0 }]]
+    },
+    "Call LM Studio": {
+      "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

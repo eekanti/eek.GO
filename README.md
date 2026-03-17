@@ -23,16 +23,16 @@ POST /webhook/{workflowId}/webhook/coding-agent
                        ├─▶ File API (GET)             → reads existing project files for context
                        │
                        ├─▶ [Pass 1]
-                       │     ├─▶ 02-Code Writer Agent  → LangChain agent + Redis session memory
+                       │     ├─▶ 02-Code Writer Agent  → direct HTTP to LM Studio (qwen2.5-coder-32b)
                        │     ├─▶ 03-Security Reviewer  → OWASP review (JSON score + issues)
                        │     ├─▶ 04-Quality Reviewer   → docs/tests/architecture review (JSON score)
-                       │     └─▶ Quality Gate          → pass if score ≥ 8 AND no critical issues
+                       │     └─▶ Quality Gate          → pass if (job_complete OR score ≥ 80) AND no critical issues
                        │
                        ├─▶ [Pass 2 — if gate fails]
-                       │     └─▶ Same pipeline with previous_feedback injected
+                       │     └─▶ Same pipeline with previous_feedback injected (full context re-sent)
                        │
                        ├─▶ [Pass 3 — if gate fails again]
-                       │     └─▶ Final attempt; proceeds to write regardless
+                       │     └─▶ Final attempt; security + quality review still run; files written regardless
                        │
                        ├─▶ File API (POST)            → writes files to /home/will/src/{project_id}/
                        └─▶ Returns task result
@@ -43,16 +43,17 @@ POST /webhook/{workflowId}/webhook/coding-agent
 ```
 
 **Supporting workflows:**
-- **05-Error Logger** — available for error tracking; wire in manually if needed
+- **05-Error Logger** — logs errors to disk via File API (`system-logs` project, `_logs/errors/`); wired automatically into 07-Task-Processor
 - **06-Project Memory** — persists goal, completed tasks, and file manifest per `project_id`
 - **07-Task Processor** — runs the full code → review → fix → write pipeline per task (up to 3 passes)
 
 ## Requirements
 
 - **n8n** running on Docker (shared Docker network `shared_net`)
-- **LM Studio** running at `http://10.0.0.100:1234` with a model loaded and server started
-- **Redis** accessible to n8n (used by Code Writer Agent for session memory)
+- **LM Studio** running at `http://10.0.0.100:1234` with models loaded and server started
 - **File API** running on Docker (see `docker/stacks/file-api/`)
+
+> Redis is no longer required. The Code Writer Agent was rewritten to use direct HTTP calls instead of a LangChain agent with Redis session memory.
 
 ---
 
@@ -62,7 +63,7 @@ POST /webhook/{workflowId}/webhook/coding-agent
 
 ```bash
 cp .env.example .env
-# Edit .env — set DOMAIN_NAME, N8N_EDITOR_BASE_URL, WEBHOOK_URL
+# Edit .env — set DOMAIN_NAME, N8N_EDITOR_BASE_URL, WEBHOOK_URL, LLM_API_KEY, FILE_API_TOKEN
 chmod +x deploy.sh
 sudo ./deploy.sh
 ```
@@ -83,7 +84,13 @@ The File API mounts `/home/will/src` as `/projects` inside the container. Genera
 curl http://10.0.0.100:1234/v1/models
 ```
 
-Set `LOCAL_AI_MODEL` in your environment (or n8n's environment variables) to your loaded model's identifier. All prompts end with `/nothink` to suppress chain-of-thought tokens on thinking models like Qwen3.
+You need two models loaded simultaneously:
+- **`qwen/qwen3.5-9b`** — used by Planner, Security Reviewer, Quality Reviewer
+- **`qwen/qwen2.5-coder-32b-instruct`** — used by Code Writer
+
+Models are hardcoded per-agent. To change them, edit the `jsCode` in each workflow's `Build Request` (or `Prepare Message`) node.
+
+Set `LLM_API_KEY` in your `.env` to your LM Studio API key. All agents send `Authorization: Bearer $env.LLM_API_KEY` in HTTP requests.
 
 ---
 
@@ -166,35 +173,43 @@ Execute Workflow Trigger → Code (Build Request) → HTTP Request (LM Studio) �
 
 ### Code Writer Agent (02)
 
-LangChain agent with Redis session memory:
+Direct HTTP call pattern — no LangChain or Redis:
 
 ```
-Execute Workflow Trigger → Code (Prepare Message) → LangChain Agent → Code (Parse Response)
-                                                          │
-                                              LM Studio Chat Model + Redis Chat Memory
+Execute Workflow Trigger → Code (Prepare Message) → HTTP Request (LM Studio) → Code (Parse Response)
 ```
 
-- **Redis session key:** `{project_id}-{task_id}` (TTL: 3600s)
-- On P2/P3 retries, the Code Writer receives only the feedback message — the agent recalls its prior code from Redis session history
-- On first run (P1), it receives the full task description, project goal, and existing file contents
+- Model: `qwen/qwen2.5-coder-32b-instruct`
+- On P1, the system message + user message contains the full task description, `files` constraint, and existing file contents
+- On P2/P3 retries, the same full context is re-sent with `previous_feedback` appended (no session memory required)
+- The `files` array from the Planner task is injected as a "FILES TO MODIFY" constraint to prevent the model from regenerating unrelated files
 
 ### Task Processor — 3-Pass Quality Gate
 
 ```
-P1: Code Writer → Security Review → Quality Review → Gate
-                                                       ├─▶ Pass (score ≥ 8, no critical issues): write files
-                                                       └─▶ Fail: P2 with feedback
+P1: Code Writer → [Merge Files] → Security Review → Quality Review → Gate
+                                                                       ├─▶ Pass: write files
+                                                                       └─▶ Fail: P2 with feedback
 
-P2: Code Writer → Security Review → Quality Review → Gate
-                                                       ├─▶ Pass: write files
-                                                       └─▶ Fail: P3 with feedback
+P2: Code Writer → [Merge Files] → Security Review → Quality Review → Gate
+                                                                       ├─▶ Pass: write files
+                                                                       └─▶ Fail: P3 with feedback
 
-P3: Code Writer → Security Review → Quality Review → write files (no further retries)
+P3: Code Writer → [Merge Files] → Security Review → Quality Review → write files (no further retries)
 ```
+
+**Gate condition:** `(job_complete === true OR quality_score >= 80) AND critical_issues.length === 0`
+
+The gate primarily relies on the Quality Reviewer's `job_complete` flag (true when all task requirements are met). `score >= 80` serves as a fallback for exceptional cases.
 
 If both reviewers return unparseable output, the code is accepted as-is rather than retrying indefinitely.
 
-File merging: generated files from Code Writer override matching paths from disk, then all are written together.
+**File handling:**
+- Only files listed in `task.files` are fetched from disk and sent as context (reduces token usage)
+- After each code generation pass, existing files and new files are merged before review
+- `package.json` dependencies are merged additively — new deps are added to the existing manifest, not replaced
+- Write guardrail: only files in `task.files` (or genuinely new files) are written to disk
+- Error Logger is called automatically if the File API read or write fails
 
 ### Project Memory (06)
 
@@ -212,18 +227,20 @@ Storage: `getWorkflowStaticData('global')` — persists across n8n restarts as l
 
 ## LLM Configuration
 
-**Model:** Set `LOCAL_AI_MODEL` env var in n8n to your loaded model's identifier (e.g. `qwen/qwen3.5-35b-a3b`).
+Models are hardcoded per-agent. To change them, edit the `jsCode` in each workflow's `Build Request` (Planner/Security/Quality) or `Prepare Message` (Code Writer) node.
 
-**Token limits and temperatures:**
+**Models and settings:**
 
-| Agent | max_tokens | temperature | Notes |
-|-------|-----------|------------|-------|
-| Planner | 4096 | 0.7 | Direct HTTP |
-| Code Writer | 16000 | 0.7 | LangChain + Redis |
-| Security Reviewer | 2048 | 0.3 | Direct HTTP |
-| Quality Reviewer | 2048 | 0.3 | Direct HTTP |
+| Agent | Model | max_tokens | temperature | Notes |
+|-------|-------|-----------|------------|-------|
+| Planner | `qwen/qwen3.5-9b` | 8192 | 0.7 | Direct HTTP |
+| Code Writer | `qwen/qwen2.5-coder-32b-instruct` | 16000 | 0.7 | Direct HTTP |
+| Security Reviewer | `qwen/qwen3.5-9b` | 2048 | 0.3 | Direct HTTP, 120s timeout |
+| Quality Reviewer | `qwen/qwen3.5-9b` | 2048 | 0.3 | Direct HTTP, 120s timeout |
 
-**Qwen3 thinking model support:** All parse-response nodes strip `<think>...</think>` blocks and fall back to `reasoning_content` if `content` is empty. Prompts end with `/nothink` to disable chain-of-thought by default.
+**Auth:** All HTTP Request nodes use `Authorization: Bearer $env.LLM_API_KEY`. Set `LLM_API_KEY` in your n8n environment.
+
+**Qwen3 thinking model support:** All parse-response nodes strip `<think>...</think>` blocks and fall back to `reasoning_content` if `content` is empty.
 
 ---
 
@@ -235,18 +252,25 @@ The Planner outputs tasks in this format:
 [
   {
     "task_id": "TASK-001",
-    "description": "actionable description",
+    "description": "actionable description of exactly what to implement",
+    "files": ["src/routes/auth.ts", "package.json"],
     "dependencies": [],
     "complexity": "low|medium|high"
   },
   {
     "task_id": "TASK-002",
     "description": "depends on TASK-001",
+    "files": ["src/middleware/auth.ts"],
     "dependencies": ["TASK-001"],
     "complexity": "medium"
   }
 ]
 ```
+
+The `files` array lists the exact file paths this task creates or modifies. The Task Processor uses it to:
+1. Filter which existing project files to fetch from disk (context reduction)
+2. Constrain the Code Writer to only output those files
+3. Guard against writing unrelated files to disk
 
 The Master Orchestrator's **Spread Tasks** node sorts these using Kahn's topological algorithm so dependents always run after their prerequisites.
 
@@ -256,24 +280,26 @@ The Master Orchestrator's **Spread Tasks** node sorts these using Kahn's topolog
 
 ### Change the LLM model
 
-Set `LOCAL_AI_MODEL` in n8n's environment variables to match your loaded model's identifier from `GET http://10.0.0.100:1234/v1/models`.
+Edit the `jsCode` in the `Build Request` node (Planner/Security/Quality) or `Prepare Message` node (Code Writer) and update the `model` field to your loaded model's identifier. Check available models with `GET http://10.0.0.100:1234/v1/models`.
 
 ### Adjust temperature or token limits
 
 - **Planner / Security / Quality:** Edit the `Build Request` Code node in each sub-workflow
-- **Code Writer:** Edit the `LM Studio Chat Model` node's options
+- **Code Writer:** Edit the `Prepare Message` Code node — the `temperature` and `max_tokens` fields are in the returned object
 
 ### Modify system prompts
 
 - **Planner / Security / Quality:** Edit the `content` string in the `Build Request` Code node
-- **Code Writer:** Edit the system prompt in the `Code Writer Agent` (LangChain agent node) system message
+- **Code Writer:** Edit the `systemMessage` variable in the `Prepare Message` Code node
 
 ### Adjust quality gate threshold
 
 In `07-Task-Processor`, find the **Quality Gate 1** and **Quality Gate 2** Code nodes and change:
 ```js
-quality_score >= 8 && critical_issues.length === 0
+shouldStop = (jobComplete || score >= 80) && criticalCount === 0;
 ```
+
+The gate passes primarily via `job_complete === true` from the Quality Reviewer. To lower the score fallback, change `80` to a lower value (e.g. `7` for a 0–10 scale).
 
 ---
 
@@ -289,7 +315,7 @@ Find the exact URL in n8n → open the Master Orchestrator → click the Webhook
 
 **LM Studio returns 401**
 
-Each HTTP Request node needs `Authorization: Bearer <your-api-key>` in the Headers. The key is stored as `LM_STUDIO_API_KEY`. For the Code Writer, check the `LM Studio Chat Model` node's credential configuration.
+Each HTTP Request node sends `Authorization: Bearer $env.LLM_API_KEY`. Set `LLM_API_KEY` in your n8n environment variables to match your LM Studio API key.
 
 **Empty responses from the model**
 
@@ -306,9 +332,9 @@ Confirm all workflows are imported and **activated**, then verify the workflow I
 
 Check that `FILE_API_TOKEN` in your `.env` matches the Bearer token in the **Write Files to Disk** HTTP node in `07-Task-Processor`.
 
-**Code Writer not remembering previous pass**
+**Code Writer not reflecting previous feedback**
 
-Redis must be running and accessible to n8n. The session key is `{project_id}-{task_id}` with a 1-hour TTL. Check the Redis Chat Memory node's credential configuration.
+The Code Writer no longer uses Redis. On P2/P3 passes, the full task context plus `previous_feedback` is re-sent in the same request. If feedback isn't being applied, check the `Prepare Message` node output to confirm `previous_feedback` is populated.
 
 **Files not appearing on disk**
 

@@ -1,0 +1,221 @@
+{
+  "name": "Chunk Processor",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "chunk-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-content",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "read-existing",
+      "name": "Read Existing Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst chunkFiles = trigger.chunk_files || [];\nconst allFiles = $json.files || [];\nconst existingFiles = chunkFiles.length > 0\n  ? allFiles.filter(f => chunkFiles.includes(f.path))\n  : allFiles;\nconst task = { ...(trigger.task || {}) };\nif (chunkFiles.length > 0) task.files = chunkFiles;\nreturn [{ json: {\n  task,\n  existing_files: existingFiles,\n  plan_document: trigger.plan_document || '',\n  project_goal: trigger.project_goal || '',\n  previous_feedback: '',\n  project_id: trigger.project_id\n} }];"
+      },
+      "id": "build-code-input",
+      "name": "Build Code Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-code-writer",
+      "name": "Call Code Writer",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst chunkFiles = trigger.chunk_files || [];\nconst existingFiles = $('Build Code Input').first().json.existing_files || [];\nconst newFiles = $json.files || [];\nconst fileMap = new Map();\nexistingFiles.forEach(f => fileMap.set(f.path, f));\nnewFiles.forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = chunkFiles.length > 0\n  ? Array.from(fileMap.values()).filter(f => chunkFiles.includes(f.path))\n  : Array.from(fileMap.values());\nreturn [{ json: {\n  files: mergedFiles,\n  task: $json.task,\n  project_goal: $json.project_goal\n} }];"
+      },
+      "id": "merge-for-review",
+      "name": "Merge For Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "aL5Dr3YK4D7hIq0D", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-reviewer",
+      "name": "Call Combined Reviewer",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const review = $json.review || {};\nconst parseFailed = !!review.raw_output;\nconst score = review.quality_score || 0;\nconst jobComplete = review.job_complete === true;\nconst criticalCount = (review.security_issues || []).filter(i => i.severity === 'critical').length;\nlet shouldPass;\nif (parseFailed) {\n  shouldPass = true;\n} else {\n  shouldPass = (jobComplete || score >= 80) && criticalCount === 0;\n}\nconst feedback = [\n  ...(review.security_issues || []).map(i => `SECURITY ${i.severity.toUpperCase()}: ${i.issue} \\u2192 ${i.fix}`),\n  ...(review.quality_improvements || []).map(a => `QUALITY: ${a.area} \\u2192 ${a.fix}`),\n  ...(parseFailed ? ['REVIEW: Parser failed \\u2014 accepting code as-is'] : [])\n].join('\\n');\nreturn [{ json: {\n  should_pass: shouldPass,\n  files: $json.files || [],\n  review,\n  feedback\n} }];"
+      },
+      "id": "review-gate",
+      "name": "Review Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "pass-check",
+              "leftValue": "={{ $json.should_pass }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-done",
+      "name": "Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst chunkFiles = trigger.chunk_files || [];\nconst existingFiles = $('Build Code Input').first().json.existing_files || [];\nconst fileMap = new Map();\nexistingFiles.forEach(f => fileMap.set(f.path, f));\n($json.files || []).forEach(f => fileMap.set(f.path, f));\nconst mergedFiles = chunkFiles.length > 0\n  ? Array.from(fileMap.values()).filter(f => chunkFiles.includes(f.path))\n  : Array.from(fileMap.values());\nconst task = { ...(trigger.task || {}) };\nif (chunkFiles.length > 0) task.files = chunkFiles;\nreturn [{ json: {\n  task,\n  existing_files: mergedFiles,\n  plan_document: trigger.plan_document || '',\n  project_goal: trigger.project_goal || '',\n  previous_feedback: $json.feedback,\n  project_id: trigger.project_id\n} }];"
+      },
+      "id": "build-retry",
+      "name": "Build Retry Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 500]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "I80DcZVmNUaZVVMl", "mode": "id" },
+        "options": {}
+      },
+      "id": "call-code-writer-retry",
+      "name": "Call Code Writer Retry",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [2050, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst projectId = trigger.project_id;\nconst chunkFiles = trigger.chunk_files || [];\nconst diskFiles = $('Read Existing Files').first().json.files || [];\nconst generatedFiles = $json.files || [];\nconst existingPaths = new Set(diskFiles.map(f => f.path));\nlet filteredFiles = chunkFiles.length > 0\n  ? generatedFiles.filter(f => chunkFiles.includes(f.path) || !existingPaths.has(f.path))\n  : generatedFiles;\nconst pkgPaths = ['package.json', 'client/package.json'];\nfor (const pkgPath of pkgPaths) {\n  const pkgIdx = filteredFiles.findIndex(f => f.path === pkgPath);\n  if (pkgIdx !== -1) {\n    const diskPkg = diskFiles.find(f => f.path === pkgPath);\n    if (diskPkg) {\n      try {\n        const existing = JSON.parse(diskPkg.content);\n        const generated = JSON.parse(filteredFiles[pkgIdx].content);\n        existing.dependencies = { ...(existing.dependencies || {}), ...(generated.dependencies || {}) };\n        existing.devDependencies = { ...(existing.devDependencies || {}), ...(generated.devDependencies || {}) };\n        if (generated.scripts) existing.scripts = { ...(existing.scripts || {}), ...(generated.scripts || {}) };\n        filteredFiles[pkgIdx] = { path: pkgPath, content: JSON.stringify(existing, null, 2) + '\\n' };\n      } catch(e) {}\n    }\n  }\n}\nreturn [{ json: { project_id: projectId, files: filteredFiles } }];"
+      },
+      "id": "prepare-write",
+      "name": "Prepare Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://file-api:3456/projects/{{ $json.project_id }}/files-batch",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer f4bd4367c66fb3029f0ca655f07672db21ec5ac0370e54fa59320875c6972c50"
+            },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: $json.files }) }}",
+        "options": {}
+      },
+      "id": "write-files",
+      "name": "Write Files to Disk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trigger = $('Execute Workflow Trigger').first().json;\nconst preparedFiles = $('Prepare Write').first().json.files || [];\nconst filesWritten = preparedFiles.map(f => f.path);\nreturn [{ json: {\n  chunk_files: trigger.chunk_files || [],\n  files_written: filesWritten,\n  success: true\n} }];"
+      },
+      "id": "build-chunk-result",
+      "name": "Build Chunk Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Read Existing Files", "type": "main", "index": 0 }]]
+    },
+    "Read Existing Files": {
+      "main": [[{ "node": "Build Code Input", "type": "main", "index": 0 }]]
+    },
+    "Build Code Input": {
+      "main": [[{ "node": "Call Code Writer", "type": "main", "index": 0 }]]
+    },
+    "Call Code Writer": {
+      "main": [[{ "node": "Merge For Review", "type": "main", "index": 0 }]]
+    },
+    "Merge For Review": {
+      "main": [[{ "node": "Call Combined Reviewer", "type": "main", "index": 0 }]]
+    },
+    "Call Combined Reviewer": {
+      "main": [[{ "node": "Review Gate", "type": "main", "index": 0 }]]
+    },
+    "Review Gate": {
+      "main": [[{ "node": "Done?", "type": "main", "index": 0 }]]
+    },
+    "Done?": {
+      "main": [
+        [{ "node": "Prepare Write", "type": "main", "index": 0 }],
+        [{ "node": "Build Retry Input", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Retry Input": {
+      "main": [[{ "node": "Call Code Writer Retry", "type": "main", "index": 0 }]]
+    },
+    "Call Code Writer Retry": {
+      "main": [[{ "node": "Prepare Write", "type": "main", "index": 0 }]]
+    },
+    "Prepare Write": {
+      "main": [[{ "node": "Write Files to Disk", "type": "main", "index": 0 }]]
+    },
+    "Write Files to Disk": {
+      "main": [[{ "node": "Build Chunk Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
