@@ -1,155 +1,156 @@
 #!/bin/bash
-# Deployment Script for Plexie Server
-# Run this script to deploy the multi-agent system on your Ubuntu server
+# Deployment Script for n8n Multi-Agent Coding Pipeline
+# Deploys: file-api, n8n, and workflow configuration
 
-set -e  # Exit on error
+set -e
 
-echo "========================================="
-echo "Multi-Agent System Deployment Script"
-echo "Server: Plexie (Ubuntu)"
-echo "Repository: n8n-team"
-echo "========================================="
-
-# Check if running as root or with sudo
-if [ "$EUID" -ne 0 ]; then 
-    echo "Please run as root or with sudo"
-    exit
-fi
-
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print status messages
-print_status() {
-    echo -e "${GREEN}✓${NC} $1"
-}
+ok()   { echo -e "${GREEN}✓${NC} $1"; }
+warn() { echo -e "${YELLOW}!${NC} $1"; }
+err()  { echo -e "${RED}✗${NC} $1"; }
 
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DOCKER_COMPOSE="docker compose"
+command -v docker-compose &>/dev/null && DOCKER_COMPOSE="docker-compose"
 
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
+echo "==========================================="
+echo " n8n Multi-Agent Pipeline — Deploy"
+echo "==========================================="
 
-# Step 1: Check prerequisites
+# --- Prerequisites ---
 echo ""
-echo "Step 1: Checking prerequisites..."
+echo "Checking prerequisites..."
 
-if ! command -v docker &> /dev/null; then
-    print_error "Docker is not installed. Installing Docker now..."
-    apt-get update && apt-get install -y docker.io
-fi
+for cmd in docker git curl; do
+  command -v $cmd &>/dev/null || { err "$cmd is not installed"; exit 1; }
+done
+$DOCKER_COMPOSE version &>/dev/null || { err "Docker Compose not available"; exit 1; }
+ok "docker, git, curl, docker compose"
 
-if ! command -v docker-compose &> /dev/null; then
-    print_warning "docker-compose not found, trying to use docker compose plugin..."
-    if ! docker compose version &> /dev/null; then
-        print_error "Neither docker-compose nor docker compose plugin found. Please install Docker Compose first."
-        exit 1
-    fi
-fi
-
-if ! command -v git &> /dev/null; then
-    print_warning "Git not installed, installing now..."
-    apt-get update && apt-get install -y git
-fi
-
-print_status "All prerequisites met"
-
-# Step 2: Clone or update repository
+# --- Environment ---
 echo ""
-echo "Step 2: Setting up project directory..."
+echo "Checking environment..."
 
-PROJECT_DIR="/root/n8n-team"
-if [ ! -d "$PROJECT_DIR" ]; then
-    print_warning "Project directory does not exist, cloning repository..."
-    git clone https://github.com/eekanti/n8n-team.git $PROJECT_DIR
+ENV_FILE="$SCRIPT_DIR/workflows/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  if [ -f "$SCRIPT_DIR/.env.example" ]; then
+    cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
+    warn "Created workflows/.env from .env.example — edit it with your values before continuing"
+    echo "  Required: LLM_API_KEY, LM_STUDIO_URL, FILE_API_TOKEN, N8N_API_KEY"
+    exit 1
+  else
+    err "No .env.example found. Create workflows/.env manually (see README)."
+    exit 1
+  fi
+fi
+ok "workflows/.env exists"
+
+# Source env vars for use in this script
+set -a; source "$ENV_FILE"; set +a
+
+# --- Docker network ---
+echo ""
+echo "Ensuring shared_net Docker network..."
+
+docker network inspect shared_net &>/dev/null || docker network create shared_net
+ok "shared_net network ready"
+
+# --- File API ---
+echo ""
+echo "Deploying file-api..."
+
+cd "$SCRIPT_DIR/file-api"
+$DOCKER_COMPOSE up -d --build
+ok "file-api container running"
+
+# Verify health
+sleep 2
+if curl -sf -H "Authorization: Bearer ${FILE_API_TOKEN}" http://localhost:3456/health &>/dev/null; then
+  ok "file-api health check passed"
 else
-    print_status "Updating existing project directory..."
-    cd $PROJECT_DIR && git pull origin main
+  warn "file-api health check failed — it may still be starting"
 fi
 
-# Step 3: Configure environment variables
+# --- n8n ---
 echo ""
-echo "Step 3: Configuring environment variables..."
+echo "Checking n8n..."
 
-if [ ! -f "$PROJECT_DIR/.env" ]; then
-    cp $PROJECT_DIR/.env.example $PROJECT_DIR/.env
-    print_warning "Created .env file from example. Please edit it with your actual values!"
-    echo "Required changes:"
-    echo "  - DOMAIN_NAME: Your server's domain or IP address"
-    echo "  - LOCAL_AI_MODEL: The exact model name loaded in LM Studio"
-    echo ""
-    read -p "Press Enter after you've edited .env file..."
+N8N_DIR="/docker/stacks/n8n"
+if [ -d "$N8N_DIR" ]; then
+  # Copy pipeline env vars to n8n's .env if it exists
+  if [ -f "$N8N_DIR/.env" ]; then
+    ok "n8n stack found at $N8N_DIR"
+    echo "  Ensure these vars are in $N8N_DIR/.env and passed through n8n.yml:"
+    echo "    LM_STUDIO_URL, PLANNER_MODEL, CODER_MODEL, REVIEWER_MODEL"
+    echo "    FILE_API_URL, FILE_API_TOKEN, MCP_GATEWAY_URL, LLM_API_KEY"
+  fi
+
+  # Restart n8n to pick up any env changes
+  cd "$N8N_DIR"
+  $DOCKER_COMPOSE restart n8n 2>/dev/null && ok "n8n restarted" || warn "Could not restart n8n"
 else
-    print_status ".env file already exists"
+  warn "n8n stack not found at $N8N_DIR — deploy n8n separately"
 fi
 
-# Step 4: Create data directories for persistence
+# Wait for n8n
 echo ""
-echo "Step 4: Creating persistent storage directories..."
-
-mkdir -p /docker/appdata/n8n/data
-mkdir -p /docker/appdata/n8n/local-files
-mkdir -p /docker/appdata/redis/data
-print_status "Data directories created"
-
-# Step 5: Start services with Docker Compose
+echo "Waiting for n8n..."
+for i in $(seq 1 20); do
+  curl -sf http://localhost:5678 &>/dev/null && break
+  echo -n "."
+  sleep 3
+done
 echo ""
-echo "Step 5: Starting n8n and Redis containers..."
 
-cd $PROJECT_DIR
-
-if command -v docker-compose &> /dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
+if curl -sf http://localhost:5678 &>/dev/null; then
+  ok "n8n is ready"
 else
-    DOCKER_COMPOSE_CMD="docker compose"
+  warn "n8n not reachable at localhost:5678 — check manually"
 fi
 
-$DOCKER_COMPOSE_CMD up -d
-
-print_status "Services started!"
-
-# Step 6: Wait for n8n to be ready
+# --- Workflow import ---
 echo ""
-echo "Step 6: Waiting for n8n to initialize..."
+echo "Importing workflows..."
 
-MAX_RETRIES=30
-RETRY_COUNT=0
-while ! curl -s http://localhost:5678 > /dev/null; do
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-        print_error "n8n failed to start after $MAX_RETRIES attempts"
-        exit 1
-    fi
-    echo -ne "."
-    sleep 5
+N8N_API="http://localhost:5678/api/v1"
+AUTH_HEADER="X-N8N-API-KEY: ${N8N_API_KEY}"
+
+WORKFLOW_ORDER=(
+  "01-Planner-Agent"
+  "02-Code-Writer-Agent"
+  "03-Project-Memory"
+  "04-Task-Processor"
+  "05-Combined-Reviewer-Agent"
+  "06-Chunk-Processor"
+  "07-Research-Agent"
+  "00-Master-Orchestrator"
+)
+
+for wf_name in "${WORKFLOW_ORDER[@]}"; do
+  wf_file="$SCRIPT_DIR/workflows/${wf_name}.json"
+  if [ -f "$wf_file" ]; then
+    RESULT=$(curl -sf -X POST "$N8N_API/workflows" \
+      -H "$AUTH_HEADER" \
+      -H "Content-Type: application/json" \
+      -d @"$wf_file" 2>&1) && ok "Imported $wf_name" || warn "Failed to import $wf_name (may already exist)"
+  else
+    warn "File not found: $wf_file"
+  fi
 done
 
-print_status "n8n is ready!"
-
-# Step 7: Display access information
 echo ""
-echo "========================================="
-echo "DEPLOYMENT COMPLETE! 🎉"
-echo "========================================="
+echo "==========================================="
+echo " Deployment complete"
+echo "==========================================="
 echo ""
-echo "Access n8n at: http://localhost:5678 or https://plexie.yourdomain.com"
-echo ""
-echo "Next Steps:"
-echo "1. Import the agent workflows from the workflows/ directory"
-echo "2. Create an API credential for LM Studio (http://10.0.0.100:1234/v1)"
-echo "3. Test each agent individually before connecting them together"
-echo ""
-echo "To view logs:"
-echo "  docker-compose logs -f n8n"
-echo ""
-echo "To restart services:"
-echo "  docker-compose restart"
-echo ""
-echo "To stop all services:"
-echo "  docker-compose down"
+echo "Next steps:"
+echo "  1. Open n8n at http://localhost:5678"
+echo "  2. Activate all imported workflows"
+echo "  3. Update workflow IDs in workflows/.env (WF_* vars)"
+echo "  4. Verify LM Studio is running: curl ${LM_STUDIO_URL:-http://10.0.0.100:1234/v1/chat/completions}"
+echo "  5. Test: POST to the Master Orchestrator webhook (see README)"
 echo ""
