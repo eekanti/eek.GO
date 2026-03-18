@@ -158,7 +158,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// P2: Stash Context \u2014 passes through all fields including _p2Queue for loop control\nconst staticData = $getWorkflowStaticData('global');\nstaticData._currentProjectId = $json.project_id;\nstaticData._currentTaskId = ($json.task || {}).task_id || '';\nreturn [{ json: {\n  task: $json.task,\n  chunk_files: $json.chunk_files,\n  project_id: $json.project_id,\n  project_goal: $json.project_goal,\n  plan_document: $json.plan_document,\n  _p2Queue: $json._p2Queue || []\n} }];"
+        "jsCode": "// P2: Stash Context \u2014 passes through all fields including _p2Queue for loop control\nconst staticData = $getWorkflowStaticData('global');\nstaticData._currentProjectId = $json.project_id;\nstaticData._currentTaskId = ($json.task || {}).task_id || '';\nstaticData._currentTask = $json.task || null;\nstaticData._currentProjectGoal = $json.project_goal || '';\nstaticData._currentQueue = $json._p2Queue || [];  // snapshot queue for this iteration\nreturn [{ json: {\n  task: $json.task,\n  chunk_files: $json.chunk_files,\n  project_id: $json.project_id,\n  project_goal: $json.project_goal,\n  plan_document: $json.plan_document,\n  _p2Queue: $json._p2Queue || []\n} }];"
       },
       "id": "p2-stash",
       "name": "P2: Stash Context",
@@ -184,7 +184,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// MODIFIED: Removed retry/feedback logic (that's Phase 4 now)\n// Removed hardcoded tech stack, uses positive language\nconst input = $json;\nconst planDocument = input.plan_document || '';\n\nlet taskDescription = input.task?.description || input.description || '';\nif (!taskDescription && input.task?.raw_output) {\n  const raw = input.task.raw_output;\n  const cleaned = raw.replace(/<\\/?task>/g, '').replace(/\\n+(?:Reasoning|Note):[\\s\\S]*/i, '').trim();\n  try {\n    const parsed = JSON.parse(cleaned);\n    const list = Array.isArray(parsed) ? parsed : (parsed.tasks || []);\n    taskDescription = list.map(t => `${t.task_id}: ${t.description}`).join('\\n\\n');\n  } catch(e) { taskDescription = raw; }\n}\n\nconst taskFiles = (input.task || {}).files || [];\nconst filesConstraint = taskFiles.length > 0\n  ? '\\n\\nFILES TO MODIFY (only output these files):\\n' + taskFiles.join('\\n')\n  : '';\n\nconst existingFiles = input.existing_files || [];\nconst existingFilesSection = existingFiles.length > 0\n  ? '\\n\\nEXISTING PROJECT FILES (only modify files that need changes):\\n' +\n    existingFiles.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n')\n  : '';\n\nconst userContent = `Task:\\n${taskDescription}${filesConstraint}${existingFilesSection}`;\n\nlet systemMessage = `You are a Senior Full-Stack Developer. Output ONLY the files that need to be created or changed. Skip files that are already correct.\\n\\nFor EACH file you need to create or modify, output EXACTLY this format:\\n### path/to/file.ts\\n\\`\\`\\`ts\\n[complete file content]\\n\\`\\`\\`\\n\\nRULES:\\n- Only output files that this task requires you to create or change\\n- Output complete file content (not diffs)\\n- No explanations, no numbered lists, no prose \u2014 ONLY the file blocks\\n- Only output files listed in the FILES TO MODIFY section\\n- CRITICAL: Only use packages found in the Dependency Manifest below. If you need functionality from a package not in the manifest, use built-in browser/Node APIs or the listed packages instead.\\n- CRITICAL: Match import styles to the source module. Use named imports ({ X }) for named exports, default imports for default exports. Check the EXISTING PROJECT FILES to confirm each module's export style.\\n- Preserve each file's existing export style (named vs default) when modifying it`;\n\nif (planDocument) {\n  systemMessage += `\\n\\nARCHITECTURE REFERENCE (follow this plan):\\n${planDocument}`;\n}\n\nconst researchDocs = input.research_docs || '';\nif (researchDocs) {\n  systemMessage += `\\n\\nPROJECT CONTEXT (from research agent):\\n${researchDocs}`;\n}\n\nreturn [{ json: {\n  model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507',\n  messages: [\n    { role: 'system', content: systemMessage },\n    { role: 'user', content: userContent }\n  ],\n  temperature: 0.7,\n  top_p: 0.8,\n  top_k: 20,\n  min_p: 0.0,\n  presence_penalty: 0.0,\n  repeat_penalty: 1.05,\n  max_tokens: 16384\n} }];"
+        "jsCode": "// MODIFIED: Removed retry/feedback logic (that's Phase 4 now)\n// Removed hardcoded tech stack, uses positive language\nconst input = $json;\nconst planDocument = input.plan_document || '';\n\nlet taskDescription = input.task?.description || input.description || '';\nif (!taskDescription && input.task?.raw_output) {\n  const raw = input.task.raw_output;\n  const cleaned = raw.replace(/<\\/?task>/g, '').replace(/\\n+(?:Reasoning|Note):[\\s\\S]*/i, '').trim();\n  try {\n    const parsed = JSON.parse(cleaned);\n    const list = Array.isArray(parsed) ? parsed : (parsed.tasks || []);\n    taskDescription = list.map(t => `${t.task_id}: ${t.description}`).join('\\n\\n');\n  } catch(e) { taskDescription = raw; }\n}\n\nconst taskFiles = (input.task || {}).files || [];\nconst filesConstraint = taskFiles.length > 0\n  ? '\\n\\nFILES TO MODIFY (only output these files):\\n' + taskFiles.join('\\n')\n  : '';\n\nconst existingFiles = input.existing_files || [];\nconst existingFilesSection = existingFiles.length > 0\n  ? '\\n\\nEXISTING PROJECT FILES (only modify files that need changes):\\n' +\n    existingFiles.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n')\n  : '';\n\nconst researchDocs = input.research_docs || '';\nconst hasDependencyManifest = researchDocs.includes('## Dependency Manifest');\nconst depRule = hasDependencyManifest\n  ? '- CRITICAL: Only use packages found in the Dependency Manifest below. If you need functionality from a package not in the manifest, use built-in browser/Node APIs or the listed packages instead.'\n  : '- CRITICAL: No package.json exists yet. Only use packages that are explicitly named in the Task description above. For anything not named, use built-in browser/Node APIs instead.';\n\nconst userContent = `Task:\\n${taskDescription}${filesConstraint}${existingFilesSection}`;\n\nlet systemMessage = `You are a Senior Full-Stack Developer. Output ONLY the files that need to be created or changed. Skip files that are already correct.\\n\\nFor EACH file you need to create or modify, output EXACTLY this format:\\n### path/to/file.ts\\n\\`\\`\\`ts\\n[complete file content]\\n\\`\\`\\`\\n\\nRULES:\\n- Only output files that this task requires you to create or change\\n- Output complete file content (not diffs)\\n- No explanations, no numbered lists, no prose \u2014 ONLY the file blocks\\n- Only output files listed in the FILES TO MODIFY section\\n- CRITICAL: Implement EXACTLY what the Task specifies. Use the exact text strings, component names, props, and content listed. Never substitute generic placeholders for specified content.\\n- ${depRule.replace(/^- /, '')}\\n- CRITICAL: Match import styles to the source module. Use named imports ({ X }) for named exports, default imports for default exports. Check the EXISTING PROJECT FILES to confirm each module's export style.\\n- Preserve each file's existing export style (named vs default) when modifying it`;\n\nif (planDocument) {\n  systemMessage += `\\n\\nARCHITECTURE REFERENCE (follow this plan):\\n${planDocument}`;\n}\n\nif (researchDocs) {\n  systemMessage += `\\n\\nPROJECT CONTEXT (from research agent):\\n${researchDocs}`;\n}\n\nreturn [{ json: {\n  model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507',\n  messages: [\n    { role: 'system', content: systemMessage },\n    { role: 'user', content: userContent }\n  ],\n  temperature: 0.2,\n  top_p: 0.8,\n  top_k: 20,\n  min_p: 0.0,\n  presence_penalty: 0.0,\n  repeat_penalty: 1.05,\n  max_tokens: 16384\n} }];"
       },
       "id": "cw-prepare",
       "name": "CW: Prepare Message",
@@ -226,7 +226,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst staticData = $getWorkflowStaticData('global');\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\nreturn [{ json: { files, task: stashed.task, project_id: projectId, project_goal: stashed.project_goal } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst staticData = $getWorkflowStaticData('global');\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\nconst task = staticData._currentTask || {};\nconst projectGoal = staticData._currentProjectGoal || $('Extract Input').first().json.message || '';\nreturn [{ json: { files, task, project_id: projectId, project_goal: projectGoal } }];"
       },
       "id": "cw-parse",
       "name": "CW: Parse Response",
@@ -284,7 +284,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Accumulates results, checks remaining queue from data pipeline (not static data)\nconst staticData = $getWorkflowStaticData('global');\nconst stashed = $('P2: Stash Context').first().json;\nconst task = stashed.task || {};\nconst taskId = task.task_id || 'unknown';\nconst chunkFiles = stashed.chunk_files || [];\nconst remainingQueue = stashed._p2Queue || [];\nconst writtenFiles = $json.files_written || ($json.files || []).map(f => f.path || f) || [];\n\nif (!staticData.p2Results) staticData.p2Results = [];\nstaticData.p2Results.push({\n  task_id: taskId,\n  chunk_files: chunkFiles,\n  files_written: writtenFiles\n});\n\nconst hasMore = remainingQueue.length > 0;\nreturn [{ json: { _hasMore: hasMore, _p2Queue: remainingQueue, task_id: taskId, files_written: writtenFiles } }];"
+        "jsCode": "// Accumulates results, checks remaining queue from staticData (avoids loop caching bug)\nconst staticData = $getWorkflowStaticData('global');\nconst taskId = staticData._currentTaskId || 'unknown';\nconst remainingQueue = staticData._currentQueue || [];\nconst writtenFiles = $json.files_written || ($json.files || []).map(f => f.path || f) || [];\n\nif (!staticData.p2Results) staticData.p2Results = [];\nstaticData.p2Results.push({\n  task_id: taskId,\n  files_written: writtenFiles\n});\n\nconst hasMore = remainingQueue.length > 0;\nreturn [{ json: { _hasMore: hasMore, _p2Queue: remainingQueue, task_id: taskId, files_written: writtenFiles } }];"
       },
       "id": "p2-store",
       "name": "P2: Store Result",
@@ -668,7 +668,7 @@
         "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' , context_length: 65536 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' , context_length: 98304 }) }}",
         "options": {
           "timeout": 120000
         },
@@ -724,7 +724,7 @@
         "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' , context_length: 65536 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' , context_length: 131072 }) }}",
         "options": {
           "timeout": 120000
         },
@@ -911,6 +911,19 @@
         5700,
         100
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Startup: Unload all loaded models before beginning pipeline\n// Prevents leftover models from crashed/cancelled runs eating VRAM\nconst http = require('http');\n\nfunction httpRequest(options, body) {\n  return new Promise((resolve, reject) => {\n    const req = http.request(options, (res) => {\n      let data = '';\n      res.on('data', chunk => data += chunk);\n      res.on('end', () => {\n        try { resolve(JSON.parse(data)); }\n        catch(e) { resolve(data); }\n      });\n    });\n    req.on('error', reject);\n    if (body) req.write(body);\n    req.end();\n  });\n}\n\nconst host = '10.0.0.100';\nconst port = 1234;\nconst apiKey = $env.LLM_API_KEY || '';\n\n// Get all loaded instances\nconst modelsResp = await httpRequest({\n  host, port,\n  path: '/api/v1/models',\n  method: 'GET',\n  headers: { 'Authorization': 'Bearer ' + apiKey }\n});\n\nconst unloaded = [];\nfor (const model of (modelsResp.models || [])) {\n  for (const inst of (model.loaded_instances || [])) {\n    const body = JSON.stringify({ instance_id: inst.id });\n    await httpRequest({\n      host, port,\n      path: '/api/v1/models/unload',\n      method: 'POST',\n      headers: {\n        'Authorization': 'Bearer ' + apiKey,\n        'Content-Type': 'application/json',\n        'Content-Length': Buffer.byteLength(body)\n      }\n    }, body);\n    unloaded.push(inst.id);\n  }\n}\n\nreturn [{ json: { ...$json, _startupUnloaded: unloaded } }];"
+      },
+      "id": "startup-unload-all",
+      "name": "Startup: Unload All Models",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        950,
+        100
+      ]
     }
   ],
   "connections": {
@@ -980,7 +993,7 @@
         ],
         [
           {
-            "node": "Load Planner Model",
+            "node": "Startup: Unload All Models",
             "type": "main",
             "index": 0
           }
@@ -1002,7 +1015,7 @@
       "main": [
         [
           {
-            "node": "Load Planner Model",
+            "node": "Startup: Unload All Models",
             "type": "main",
             "index": 0
           }
@@ -1457,6 +1470,17 @@
         [
           {
             "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Startup: Unload All Models": {
+      "main": [
+        [
+          {
+            "node": "Load Planner Model",
             "type": "main",
             "index": 0
           }
