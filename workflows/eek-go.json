@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-03-18T03:39:12.003Z",
+  "updatedAt": "2026-03-18T05:00:16.334Z",
   "createdAt": "2026-03-17T03:35:25.543Z",
   "id": "PNOMGkCjzFGxf52E",
   "name": "eek-Go v2 (Batch-Then-Review)",
@@ -158,7 +158,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// P2: Stash Context \u2014 passes through all fields including _p2Queue for loop control\nreturn [{ json: {\n  task: $json.task,\n  chunk_files: $json.chunk_files,\n  project_id: $json.project_id,\n  project_goal: $json.project_goal,\n  plan_document: $json.plan_document,\n  _p2Queue: $json._p2Queue || []\n} }];"
+        "jsCode": "// P2: Stash Context \u2014 passes through all fields including _p2Queue for loop control\nconst staticData = $getWorkflowStaticData('global');\nstaticData._currentProjectId = $json.project_id;\nstaticData._currentTaskId = ($json.task || {}).task_id || '';\nreturn [{ json: {\n  task: $json.task,\n  chunk_files: $json.chunk_files,\n  project_id: $json.project_id,\n  project_goal: $json.project_goal,\n  plan_document: $json.plan_document,\n  _p2Queue: $json._p2Queue || []\n} }];"
       },
       "id": "p2-stash",
       "name": "P2: Stash Context",
@@ -171,7 +171,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// NEW: Replaces Chunk: Read Existing Files + Research: Build Project Context + Chunk: Build Code Input\n// Uses $() node reference for task context, static data only for cached file contents\nconst staticData = $getWorkflowStaticData('global');\nconst stashed = $('P2: Stash Context').first().json;\nconst chunkFiles = stashed.chunk_files || [];\nconst allFiles = staticData._allFileContents || [];\n\n// Get existing content for files in this chunk\nconst existingFiles = chunkFiles.length > 0\n  ? allFiles.filter(f => chunkFiles.includes(f.path))\n  : [];\n\nconst task = { ...(stashed.task || {}) };\nif (chunkFiles.length > 0) task.files = chunkFiles;\n\nreturn [{ json: {\n  task,\n  existing_files: existingFiles,\n  plan_document: stashed.plan_document || '',\n  project_goal: stashed.project_goal || '',\n  project_id: stashed.project_id,\n  research_docs: staticData._researchDocs || ''\n} }];"
+        "jsCode": "// NEW: Replaces Chunk: Read Existing Files + Research: Build Project Context + Chunk: Build Code Input\n// Uses $() node reference for task context, static data only for cached file contents\nconst staticData = $getWorkflowStaticData('global');\nconst stashed = $json;  // use direct input, not node ref (avoids loop caching bug)\nconst chunkFiles = stashed.chunk_files || [];\nconst allFiles = staticData._allFileContents || [];\n\n// Get existing content for files in this chunk\nconst existingFiles = chunkFiles.length > 0\n  ? allFiles.filter(f => chunkFiles.includes(f.path))\n  : [];\n\nconst task = { ...(stashed.task || {}) };\nif (chunkFiles.length > 0) task.files = chunkFiles;\n\nreturn [{ json: {\n  task,\n  existing_files: existingFiles,\n  plan_document: stashed.plan_document || '',\n  project_goal: stashed.project_goal || '',\n  project_id: stashed.project_id,\n  research_docs: staticData._researchDocs || ''\n} }];"
       },
       "id": "p2-build-input",
       "name": "P2: Build Code Input",
@@ -226,7 +226,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst stashed = $('P2: Stash Context').first().json;\nconst projectId = stashed.project_id || $('Extract Input').first().json.project_id || 'unknown';\nreturn [{ json: { files, task: stashed.task, project_id: projectId, project_goal: stashed.project_goal } }];"
+        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst staticData = $getWorkflowStaticData('global');\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\nreturn [{ json: { files, task: stashed.task, project_id: projectId, project_goal: stashed.project_goal } }];"
       },
       "id": "cw-parse",
       "name": "CW: Parse Response",
@@ -239,7 +239,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// NEW: Replaces Chunk: Prepare Write\n// Simplified write prep + updates _allFileContents cache so later chunks see fresh content\nconst stashed = $('P2: Stash Context').first().json;\nconst chunkFiles = stashed.chunk_files || [];\nconst newFiles = $json.files || [];\nconst projectId = $json.project_id || stashed.project_id;\n\n// Include all files the Code Writer produced\nlet filteredFiles = newFiles;\n\n// Handle package.json merge: preserve existing deps, add new ones\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nfor (const newFile of filteredFiles) {\n  if (newFile.path === 'package.json' || newFile.path.endsWith('/package.json')) {\n    const existing = allFiles.find(f => f.path === newFile.path);\n    if (existing) {\n      try {\n        const existingPkg = JSON.parse(existing.content);\n        const newPkg = JSON.parse(newFile.content);\n        newPkg.dependencies = { ...(existingPkg.dependencies || {}), ...(newPkg.dependencies || {}) };\n        newPkg.devDependencies = { ...(existingPkg.devDependencies || {}), ...(newPkg.devDependencies || {}) };\n        newFile.content = JSON.stringify(newPkg, null, 2);\n      } catch(e) {}\n    }\n  }\n}\n\n// Update the in-memory file cache so later chunks see fresh content\nfor (const newFile of filteredFiles) {\n  const idx = allFiles.findIndex(f => f.path === newFile.path);\n  if (idx >= 0) {\n    allFiles[idx] = { path: newFile.path, content: newFile.content };\n  } else {\n    allFiles.push({ path: newFile.path, content: newFile.content });\n  }\n}\nstaticData._allFileContents = allFiles;\n\nif (filteredFiles.length === 0) {\n  return [{ json: { project_id: projectId, files: [], _skipWrite: true } }];\n}\n\nreturn [{ json: { project_id: projectId, files: filteredFiles } }];"
+        "jsCode": "// NEW: Replaces Chunk: Prepare Write\n// Simplified write prep + updates _allFileContents cache so later chunks see fresh content\nconst stashed = $('P2: Stash Context').first().json;\nconst chunkFiles = stashed.chunk_files || [];\nconst newFiles = $json.files || [];\nconst staticData2 = $getWorkflowStaticData('global');\nconst projectId = $json.project_id || staticData2._currentProjectId || stashed.project_id;\n\n// Include all files the Code Writer produced\nlet filteredFiles = newFiles;\n\n// Handle package.json merge: preserve existing deps, add new ones\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nfor (const newFile of filteredFiles) {\n  if (newFile.path === 'package.json' || newFile.path.endsWith('/package.json')) {\n    const existing = allFiles.find(f => f.path === newFile.path);\n    if (existing) {\n      try {\n        const existingPkg = JSON.parse(existing.content);\n        const newPkg = JSON.parse(newFile.content);\n        newPkg.dependencies = { ...(existingPkg.dependencies || {}), ...(newPkg.dependencies || {}) };\n        newPkg.devDependencies = { ...(existingPkg.devDependencies || {}), ...(newPkg.devDependencies || {}) };\n        newFile.content = JSON.stringify(newPkg, null, 2);\n      } catch(e) {}\n    }\n  }\n}\n\n// Update the in-memory file cache so later chunks see fresh content\nfor (const newFile of filteredFiles) {\n  const idx = allFiles.findIndex(f => f.path === newFile.path);\n  if (idx >= 0) {\n    allFiles[idx] = { path: newFile.path, content: newFile.content };\n  } else {\n    allFiles.push({ path: newFile.path, content: newFile.content });\n  }\n}\nstaticData._allFileContents = allFiles;\n\nif (filteredFiles.length === 0) {\n  return [{ json: { project_id: projectId, files: [], _skipWrite: true } }];\n}\n\nreturn [{ json: { project_id: projectId, files: filteredFiles } }];"
       },
       "id": "p2-prepare-write",
       "name": "P2: Prepare Write",
@@ -1798,9 +1798,9 @@
   },
   "meta": null,
   "pinData": {},
-  "versionId": "aee407d4-2071-4ffd-87d6-942113d98ba2",
-  "activeVersionId": "aee407d4-2071-4ffd-87d6-942113d98ba2",
-  "versionCounter": 125,
+  "versionId": "4e42a366-112c-4fba-8a9d-9bb811d92800",
+  "activeVersionId": "4e42a366-112c-4fba-8a9d-9bb811d92800",
+  "versionCounter": 128,
   "triggerCount": 1,
   "shared": [
     {
@@ -1823,9 +1823,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-03-18T03:39:12.005Z",
-    "createdAt": "2026-03-18T03:39:12.005Z",
-    "versionId": "aee407d4-2071-4ffd-87d6-942113d98ba2",
+    "updatedAt": "2026-03-18T05:00:16.336Z",
+    "createdAt": "2026-03-18T05:00:16.336Z",
+    "versionId": "4e42a366-112c-4fba-8a9d-9bb811d92800",
     "workflowId": "PNOMGkCjzFGxf52E",
     "nodes": [
       {
@@ -1966,7 +1966,7 @@
       },
       {
         "parameters": {
-          "jsCode": "// MODIFIED: Absorbs Split Into Chunks. Builds flat (task, chunk) queue.\n// Queue is passed through data pipeline (not static data) to avoid stale reads after HTTP nodes.\nconst tasks = $json.tasks || [];\nconst planDocument = $json.plan_document || '';\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n\n// Topological sort\nconst taskMap = new Map();\ntasks.forEach(t => taskMap.set(t.task_id, t));\nconst inDegree = new Map();\nconst dependents = new Map();\ntasks.forEach(t => {\n  inDegree.set(t.task_id, 0);\n  dependents.set(t.task_id, []);\n});\ntasks.forEach(t => {\n  const deps = (t.dependencies || []).filter(d => taskMap.has(d));\n  inDegree.set(t.task_id, deps.length);\n  deps.forEach(d => dependents.get(d).push(t.task_id));\n});\nconst topoQueue = [];\ntasks.forEach(t => {\n  if (inDegree.get(t.task_id) === 0) topoQueue.push(t.task_id);\n});\nconst sorted = [];\nwhile (topoQueue.length > 0) {\n  const id = topoQueue.shift();\n  sorted.push(taskMap.get(id));\n  for (const dep of (dependents.get(id) || [])) {\n    inDegree.set(dep, inDegree.get(dep) - 1);\n    if (inDegree.get(dep) === 0) topoQueue.push(dep);\n  }\n}\nif (sorted.length < tasks.length) {\n  const sortedIds = new Set(sorted.map(t => t.task_id));\n  tasks.forEach(t => { if (!sortedIds.has(t.task_id)) sorted.push(t); });\n}\n\n// Flatten into (task, chunk) queue \u2014 2 files per chunk\nconst chunkSize = 2;\nconst queue = [];\nfor (const task of sorted) {\n  const taskFiles = task.files || [];\n  const chunks = [];\n  for (let i = 0; i < taskFiles.length; i += chunkSize) {\n    chunks.push(taskFiles.slice(i, i + chunkSize));\n  }\n  if (chunks.length === 0) chunks.push([]);\n  for (const chunkFiles of chunks) {\n    queue.push({\n      task,\n      chunk_files: chunkFiles,\n      project_id: projectId,\n      project_goal: projectGoal,\n      plan_document: planDocument\n    });\n  }\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.p2Results = [];\nstaticData.allTasks = sorted;\n\nif (queue.length === 0) {\n  return [{ json: { task: { task_id: 'NONE', description: 'No tasks', files: [] }, chunk_files: [], project_id: projectId, project_goal: projectGoal, plan_document: planDocument, _p2Queue: [] } }];\n}\n// Pass remaining queue items through data pipeline instead of static data\nconst first = queue[0];\nfirst._p2Queue = queue.slice(1);\nreturn [{ json: first }];"
+          "jsCode": "// MODIFIED: Absorbs Split Into Chunks. Builds flat (task, chunk) queue.\n// Queue is passed through data pipeline (not static data) to avoid stale reads after HTTP nodes.\nconst tasks = $json.tasks || [];\nconst planDocument = $json.plan_document || '';\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n\n// Topological sort\nconst taskMap = new Map();\ntasks.forEach(t => taskMap.set(t.task_id, t));\nconst inDegree = new Map();\nconst dependents = new Map();\ntasks.forEach(t => {\n  inDegree.set(t.task_id, 0);\n  dependents.set(t.task_id, []);\n});\ntasks.forEach(t => {\n  const deps = (t.dependencies || []).filter(d => taskMap.has(d));\n  inDegree.set(t.task_id, deps.length);\n  deps.forEach(d => dependents.get(d).push(t.task_id));\n});\nconst topoQueue = [];\ntasks.forEach(t => {\n  if (inDegree.get(t.task_id) === 0) topoQueue.push(t.task_id);\n});\nconst sorted = [];\nwhile (topoQueue.length > 0) {\n  const id = topoQueue.shift();\n  sorted.push(taskMap.get(id));\n  for (const dep of (dependents.get(id) || [])) {\n    inDegree.set(dep, inDegree.get(dep) - 1);\n    if (inDegree.get(dep) === 0) topoQueue.push(dep);\n  }\n}\nif (sorted.length < tasks.length) {\n  const sortedIds = new Set(sorted.map(t => t.task_id));\n  tasks.forEach(t => { if (!sortedIds.has(t.task_id)) sorted.push(t); });\n}\n\n// Flatten into (task, chunk) queue \u2014 2 files per chunk\nconst chunkSize = 2;\nconst queue = [];\nfor (const task of sorted) {\n  const taskFiles = task.files || [];\n  const chunks = [];\n  for (let i = 0; i < taskFiles.length; i += chunkSize) {\n    chunks.push(taskFiles.slice(i, i + chunkSize));\n  }\n  if (taskFiles.length === 0) continue;  // skip tasks with no files assigned\n  for (const chunkFiles of chunks) {\n    queue.push({\n      task,\n      chunk_files: chunkFiles,\n      project_id: projectId,\n      project_goal: projectGoal,\n      plan_document: planDocument\n    });\n  }\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.p2Results = [];\nstaticData.allTasks = sorted;\n\nif (queue.length === 0) {\n  return [{ json: { task: { task_id: 'NONE', description: 'No tasks', files: [] }, chunk_files: [], project_id: projectId, project_goal: projectGoal, plan_document: planDocument, _p2Queue: [] } }];\n}\n// Pass remaining queue items through data pipeline instead of static data\nconst first = queue[0];\nfirst._p2Queue = queue.slice(1);\nreturn [{ json: first }];"
         },
         "id": "spread-tasks",
         "name": "Spread Tasks",
@@ -2047,7 +2047,7 @@
       },
       {
         "parameters": {
-          "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst stashed = $('P2: Stash Context').first().json;\nreturn [{ json: { files, task: stashed.task, project_id: stashed.project_id, project_goal: stashed.project_goal } }];"
+          "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst stashed = $('P2: Stash Context').first().json;\nconst projectId = stashed.project_id || $('Extract Input').first().json.project_id || 'unknown';\nreturn [{ json: { files, task: stashed.task, project_id: projectId, project_goal: stashed.project_goal } }];"
         },
         "id": "cw-parse",
         "name": "CW: Parse Response",
@@ -2489,7 +2489,7 @@
           "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+          "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' , context_length: 65536 }) }}",
           "options": {
             "timeout": 120000
           },
@@ -2545,7 +2545,7 @@
           "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+          "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' , context_length: 65536 }) }}",
           "options": {
             "timeout": 120000
           },
@@ -2601,7 +2601,7 @@
           "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+          "jsonBody": "={{ JSON.stringify({ model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' , context_length: 65536 }) }}",
           "options": {
             "timeout": 120000
           },
@@ -2670,7 +2670,7 @@
           "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+          "jsonBody": "={{ JSON.stringify({ model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' , context_length: 65536 }) }}",
           "options": {
             "timeout": 120000
           },
@@ -3291,18 +3291,18 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-03-18T03:39:12.121Z",
-        "id": 399,
+        "createdAt": "2026-03-18T05:00:16.461Z",
+        "id": 401,
         "workflowId": "PNOMGkCjzFGxf52E",
-        "versionId": "aee407d4-2071-4ffd-87d6-942113d98ba2",
+        "versionId": "4e42a366-112c-4fba-8a9d-9bb811d92800",
         "event": "activated",
         "userId": "8a83cac8-2e54-48fc-8da6-ef4d02988d2f"
       },
       {
-        "createdAt": "2026-03-18T03:39:12.080Z",
-        "id": 398,
+        "createdAt": "2026-03-18T05:00:16.418Z",
+        "id": 400,
         "workflowId": "PNOMGkCjzFGxf52E",
-        "versionId": "aee407d4-2071-4ffd-87d6-942113d98ba2",
+        "versionId": "4e42a366-112c-4fba-8a9d-9bb811d92800",
         "event": "deactivated",
         "userId": "8a83cac8-2e54-48fc-8da6-ef4d02988d2f"
       }
