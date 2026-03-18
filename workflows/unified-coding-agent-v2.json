@@ -1,0 +1,780 @@
+{
+  "name": "eek-Go v2 (Batch-Then-Review)",
+  "nodes": [
+
+    {"_comment": "=== PHASE 1: PLAN (keep-as-is nodes from v1) ==="},
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "coding-agent",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wh-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "b3f7a2d1-4e89-4c12-9f56-a1b2c3d4e5f6"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const query = $json.query || {};\nconst body = $json.body || $json;\nconst message = query.message || body.message || body.goal || '';\nconst projectId = query.project_id || body.project_id || ('proj-' + Date.now());\nreturn [{ json: { message, project_id: projectId, operation: 'init', goal: message } }];"
+      },
+      "id": "extract-input",
+      "name": "Extract Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const operation = $json.operation || 'get';\nconst projectId = $json.project_id;\nif (!projectId) return [{ json: { error: 'project_id required' } }];\nconst store = $getWorkflowStaticData('global');\nif (operation === 'init') {\n  if (store[projectId]) return [{ json: { ...store[projectId], already_exists: true } }];\n  store[projectId] = {\n    project_id: projectId,\n    goal: $json.goal || '',\n    status: 'active',\n    completed_tasks: [],\n    pending_tasks: [],\n    files: [],\n    created_at: new Date().toISOString(),\n    last_updated: new Date().toISOString()\n  };\n  return [{ json: store[projectId] }];\n}\nif (operation === 'get') {\n  return [{ json: store[projectId] || { project_id: projectId, exists: false } }];\n}\nif (operation === 'set') {\n  const existing = store[projectId] || {};\n  store[projectId] = { ...existing, ...$json.state, project_id: projectId, last_updated: new Date().toISOString() };\n  return [{ json: store[projectId] }];\n}\nreturn [{ json: { error: `Unknown operation: ${operation}` } }];"
+      },
+      "id": "init-memory",
+      "name": "Init Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-content' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-project-files",
+      "name": "Fetch Project Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300],
+      "onError": "continueRegularOutput"
+    },
+
+    {"_comment": "=== PHASE 1: MODIFIED — Prepare Planner Input absorbs research context ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// MODIFIED: Absorbs Research: Build Project Context\n// Caches _allFileContents, _researchDocs, _projectFileList in static data\n// so Phase 2 chunks don't need to re-fetch or re-compute.\nconst memory = $('Init Memory').first().json;\nconst message = $('Extract Input').first().json.message;\nconst allFiles = $json.files || [];\nconst staticData = $getWorkflowStaticData('global');\n\n// Cache all file contents for Phase 2\nstaticData._allFileContents = allFiles;\n\nconst fileList = allFiles.map(f => f.path);\n\n// Build API surface (exports from each file)\nconst apiSurface = [];\nfor (const f of allFiles) {\n  if (!f.path.match(/\\.(ts|tsx|js|jsx)$/) || f.path.includes('node_modules')) continue;\n  const lines = (f.content || '').split('\\n');\n  const exports = [];\n  for (const line of lines) {\n    const trimmed = line.trim();\n    if (/^export\\s+default\\s/.test(trimmed)) {\n      exports.push(trimmed.replace(/\\{[\\s\\S]*$/, '{...}').substring(0, 120));\n    } else if (/^export\\s+(const|let|var|function|class|interface|type|enum)\\s/.test(trimmed)) {\n      exports.push(trimmed.replace(/\\{[\\s\\S]*$/, '{...}').replace(/=>[\\s\\S]*$/, '=> ...').substring(0, 150));\n    } else if (/^export\\s+\\{/.test(trimmed)) {\n      exports.push(trimmed.substring(0, 150));\n    }\n  }\n  if (exports.length > 0) {\n    apiSurface.push(`## ${f.path}\\n${exports.join('\\n')}`);\n  }\n}\n\n// Extract dependencies from package.json\nlet dependencies = {};\nlet devDependencies = {};\nlet depNames = [];\nfor (const f of allFiles) {\n  if (f.path === 'package.json' || f.path.endsWith('/package.json')) {\n    try {\n      const pkg = JSON.parse(f.content);\n      dependencies = { ...dependencies, ...(pkg.dependencies || {}) };\n      devDependencies = { ...devDependencies, ...(pkg.devDependencies || {}) };\n      depNames = [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.devDependencies || {})];\n    } catch(e) {}\n  }\n}\n\n// Build research docs string\nconst depList = Object.entries(dependencies).map(([k,v]) => `  ${k}: ${v}`).join('\\n');\nconst devDepList = Object.entries(devDependencies).map(([k,v]) => `  ${k}: ${v}`).join('\\n');\nlet researchDocs = '';\nif (depList || devDepList) {\n  researchDocs += '## Dependency Manifest\\nOnly use packages listed here.\\n';\n  if (depList) researchDocs += `dependencies:\\n${depList}\\n`;\n  if (devDepList) researchDocs += `devDependencies:\\n${devDepList}\\n`;\n}\nif (apiSurface.length > 0) {\n  researchDocs += '\\n## Project API Surface\\nMatch these import/export signatures exactly when importing from project files.\\n';\n  researchDocs += apiSurface.join('\\n\\n');\n}\n\n// Cache for all downstream phases\nstaticData._researchDocs = researchDocs;\nstaticData._projectFileList = fileList;\nstaticData._projectApiSummary = apiSurface.join('\\n');\nstaticData._projectDeps = depNames;\n\nreturn [{ json: {\n  message,\n  project_goal: memory.goal || message,\n  project_id: memory.project_id,\n  existing_files: fileList,\n  api_summary: apiSurface.join('\\n'),\n  installed_packages: depNames\n} }];"
+      },
+      "id": "prepare-planner",
+      "name": "Prepare Planner Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+
+    {"_comment": "=== PHASE 1: MODIFIED — Planner: Build Request (positive language, no plan_document, no hardcoded tech stack) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "const message = $json.message || '';\nconst existingFiles = $json.existing_files || [];\nconst apiSummary = $json.api_summary || '';\nconst installedPkgs = $json.installed_packages || [];\n\nlet projectContext = '';\nif (existingFiles.length > 0) {\n  projectContext += `\\n\\nEXISTING PROJECT FILES (only reference files from this list):\\n${existingFiles.join('\\n')}\\n`;\n}\nif (apiSummary) {\n  projectContext += `\\nAPI SURFACE (exports from each file):\\n${apiSummary}\\n`;\n}\nif (installedPkgs.length > 0) {\n  projectContext += `\\nINSTALLED PACKAGES (only reference packages from this list):\\n${installedPkgs.join(', ')}\\n`;\n}\n\nreturn [{\n  json: {\n    model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Software Architect. Your job is to break a coding request into MULTIPLE structured tasks. Each task will be handled by a separate coder who writes files in batches of 2.\\n\\nRequest: ${message}${projectContext}\\n\\nOutput a JSON object with ONE field:\\n\\n\"tasks\": array of task objects. IMPORTANT: You MUST create multiple tasks. Group files by concern (e.g. styles in one task, frontend components in another, config in another). Each task has:\\n- task_id: string like \"TASK-001\"\\n- description: detailed actionable description of what to implement, including specific requirements, color values, component names, API endpoints, and behavior. The coder cannot see the original request — your description is all they get.\\n- files: array of exact file paths to create or modify. List EVERY file this task needs — the coder can ONLY write files listed here. Only use file paths from the EXISTING PROJECT FILES list above.\\n- dependencies: array of task_id strings this task depends on (empty if none)\\n- complexity: \"low\", \"medium\", or \"high\"\\n\\nRULES:\\n- Always split work across multiple tasks by concern: styles, components, routes, config, etc.\\n- Each task should touch at most 3-4 files\\n- The description must be SELF-CONTAINED — include ALL details the coder needs\\n- Only reference files from the EXISTING PROJECT FILES list. Only reference packages from the INSTALLED PACKAGES list.\\n- Detect the project type from the files and packages. If the project is a React/Vite frontend (no Express or backend framework in INSTALLED PACKAGES), focus all tasks on frontend files. Only create server/middleware/API handler tasks if Express or a similar backend framework is in INSTALLED PACKAGES.\\n- In each task description, specify the EXACT import/export style each file should use (named vs default) based on the API SURFACE above.\\n- Output ONLY the raw JSON object: {\\\"tasks\\\": [...]}\\n- No markdown, no explanation — ONLY the JSON with tasks`\n    }],\n    temperature: 0.6,\n    top_p: 0.95,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 0.0,\n    max_tokens: 32768\n  }\n}];"
+      },
+      "id": "planner-build",
+      "name": "Planner: Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+
+    {"_comment": "=== PHASE 1: KEEP — Planner: Call LM Studio (from v1, added timeout) ==="},
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 300000 },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}" }
+          ]
+        }
+      },
+      "id": "planner-llm",
+      "name": "Planner: Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1450, 300]
+    },
+
+    {"_comment": "=== PHASE 1: KEEP — Planner: Parse Response (from v1, added truncated JSON recovery) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/<\\/?task>/g, '').trim();\ncontent = content.replace(/\\n+(?:Reasoning|Note|Explanation):[\\s\\S]*/i, '').trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\n\nlet tasks, planDocument = '';\ntry {\n  const parsed = JSON.parse(content);\n  if (Array.isArray(parsed)) {\n    tasks = parsed;\n  } else {\n    tasks = parsed.tasks || [parsed];\n    planDocument = parsed.plan_document || '';\n  }\n} catch (e) {\n  // Truncated JSON recovery: extract complete task objects\n  const tasksMatch = content.match(/\"tasks\"\\s*:\\s*\\[/);\n  if (tasksMatch) {\n    const arrStart = content.indexOf('[', tasksMatch.index);\n    let bracketDepth = 0;\n    let lastCompleteObj = -1;\n    for (let i = arrStart; i < content.length; i++) {\n      if (content[i] === '{') bracketDepth++;\n      if (content[i] === '}') {\n        bracketDepth--;\n        if (bracketDepth === 0) lastCompleteObj = i;\n      }\n    }\n    if (lastCompleteObj > arrStart) {\n      const recoveredArr = content.substring(arrStart, lastCompleteObj + 1) + ']';\n      try {\n        tasks = JSON.parse(recoveredArr);\n      } catch (e2) {\n        tasks = [{ task_id: 'TASK-FALLBACK-' + Date.now(), description: content, files: [], dependencies: [], complexity: 'high' }];\n      }\n    } else {\n      tasks = [{ task_id: 'TASK-FALLBACK-' + Date.now(), description: content, files: [], dependencies: [], complexity: 'high' }];\n    }\n  } else {\n    tasks = [{ task_id: 'TASK-FALLBACK-' + Date.now(), description: content, files: [], dependencies: [], complexity: 'high' }];\n  }\n}\n\ntasks = tasks.map(t => ({\n  ...t,\n  files: t.files || [],\n  dependencies: t.dependencies || [],\n  complexity: t.complexity || 'medium'\n}));\n\nreturn [{ json: { tasks, plan_document: planDocument } }];"
+      },
+      "id": "planner-parse",
+      "name": "Planner: Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+
+    {"_comment": "=== PHASE 1: MODIFIED — Spread Tasks (absorbs Split Into Chunks, builds flat queue) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// MODIFIED: Absorbs Split Into Chunks. Builds flat (task, chunk) queue.\n// Queue is passed through data pipeline (not static data) to avoid stale reads after HTTP nodes.\nconst tasks = $json.tasks || [];\nconst planDocument = $json.plan_document || '';\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectId = plannerInput.project_id;\nconst projectGoal = plannerInput.project_goal;\n\n// Topological sort\nconst taskMap = new Map();\ntasks.forEach(t => taskMap.set(t.task_id, t));\nconst inDegree = new Map();\nconst dependents = new Map();\ntasks.forEach(t => {\n  inDegree.set(t.task_id, 0);\n  dependents.set(t.task_id, []);\n});\ntasks.forEach(t => {\n  const deps = (t.dependencies || []).filter(d => taskMap.has(d));\n  inDegree.set(t.task_id, deps.length);\n  deps.forEach(d => dependents.get(d).push(t.task_id));\n});\nconst topoQueue = [];\ntasks.forEach(t => {\n  if (inDegree.get(t.task_id) === 0) topoQueue.push(t.task_id);\n});\nconst sorted = [];\nwhile (topoQueue.length > 0) {\n  const id = topoQueue.shift();\n  sorted.push(taskMap.get(id));\n  for (const dep of (dependents.get(id) || [])) {\n    inDegree.set(dep, inDegree.get(dep) - 1);\n    if (inDegree.get(dep) === 0) topoQueue.push(dep);\n  }\n}\nif (sorted.length < tasks.length) {\n  const sortedIds = new Set(sorted.map(t => t.task_id));\n  tasks.forEach(t => { if (!sortedIds.has(t.task_id)) sorted.push(t); });\n}\n\n// Flatten into (task, chunk) queue — 2 files per chunk\nconst chunkSize = 2;\nconst queue = [];\nfor (const task of sorted) {\n  const taskFiles = task.files || [];\n  const chunks = [];\n  for (let i = 0; i < taskFiles.length; i += chunkSize) {\n    chunks.push(taskFiles.slice(i, i + chunkSize));\n  }\n  if (chunks.length === 0) chunks.push([]);\n  for (const chunkFiles of chunks) {\n    queue.push({\n      task,\n      chunk_files: chunkFiles,\n      project_id: projectId,\n      project_goal: projectGoal,\n      plan_document: planDocument\n    });\n  }\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.p2Results = [];\nstaticData.allTasks = sorted;\n\nif (queue.length === 0) {\n  return [{ json: { task: { task_id: 'NONE', description: 'No tasks', files: [] }, chunk_files: [], project_id: projectId, project_goal: projectGoal, plan_document: planDocument, _p2Queue: [] } }];\n}\n// Pass remaining queue items through data pipeline instead of static data\nconst first = queue[0];\nfirst._p2Queue = queue.slice(1);\nreturn [{ json: first }];"
+      },
+      "id": "spread-tasks",
+      "name": "Spread Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+
+    {"_comment": "=== PHASE 2: CODE (single flat loop) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// P2: Stash Context — passes through all fields including _p2Queue for loop control\nreturn [{ json: {\n  task: $json.task,\n  chunk_files: $json.chunk_files,\n  project_id: $json.project_id,\n  project_goal: $json.project_goal,\n  plan_document: $json.plan_document,\n  _p2Queue: $json._p2Queue || []\n} }];"
+      },
+      "id": "p2-stash",
+      "name": "P2: Stash Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300]
+    },
+
+    {"_comment": "=== PHASE 2: NEW — P2: Build Code Input (pulls cached files + research from static data) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Replaces Chunk: Read Existing Files + Research: Build Project Context + Chunk: Build Code Input\n// Uses $() node reference for task context, static data only for cached file contents\nconst staticData = $getWorkflowStaticData('global');\nconst stashed = $('P2: Stash Context').first().json;\nconst chunkFiles = stashed.chunk_files || [];\nconst allFiles = staticData._allFileContents || [];\n\n// Get existing content for files in this chunk\nconst existingFiles = chunkFiles.length > 0\n  ? allFiles.filter(f => chunkFiles.includes(f.path))\n  : [];\n\nconst task = { ...(stashed.task || {}) };\nif (chunkFiles.length > 0) task.files = chunkFiles;\n\nreturn [{ json: {\n  task,\n  existing_files: existingFiles,\n  plan_document: stashed.plan_document || '',\n  project_goal: stashed.project_goal || '',\n  project_id: stashed.project_id,\n  research_docs: staticData._researchDocs || ''\n} }];"
+      },
+      "id": "p2-build-input",
+      "name": "P2: Build Code Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300]
+    },
+
+    {"_comment": "=== PHASE 2: MODIFIED — CW: Prepare Message (positive language, no hardcoded tech stack) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// MODIFIED: Removed retry/feedback logic (that's Phase 4 now)\n// Removed hardcoded tech stack, uses positive language\nconst input = $json;\nconst planDocument = input.plan_document || '';\n\nlet taskDescription = input.task?.description || input.description || '';\nif (!taskDescription && input.task?.raw_output) {\n  const raw = input.task.raw_output;\n  const cleaned = raw.replace(/<\\/?task>/g, '').replace(/\\n+(?:Reasoning|Note):[\\s\\S]*/i, '').trim();\n  try {\n    const parsed = JSON.parse(cleaned);\n    const list = Array.isArray(parsed) ? parsed : (parsed.tasks || []);\n    taskDescription = list.map(t => `${t.task_id}: ${t.description}`).join('\\n\\n');\n  } catch(e) { taskDescription = raw; }\n}\n\nconst taskFiles = (input.task || {}).files || [];\nconst filesConstraint = taskFiles.length > 0\n  ? '\\n\\nFILES TO MODIFY (only output these files):\\n' + taskFiles.join('\\n')\n  : '';\n\nconst existingFiles = input.existing_files || [];\nconst existingFilesSection = existingFiles.length > 0\n  ? '\\n\\nEXISTING PROJECT FILES (only modify files that need changes):\\n' +\n    existingFiles.map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``).join('\\n\\n')\n  : '';\n\nconst userContent = `Task:\\n${taskDescription}${filesConstraint}${existingFilesSection}`;\n\nlet systemMessage = `You are a Senior Full-Stack Developer. Output ONLY the files that need to be created or changed. Skip files that are already correct.\\n\\nFor EACH file you need to create or modify, output EXACTLY this format:\\n### path/to/file.ts\\n\\`\\`\\`ts\\n[complete file content]\\n\\`\\`\\`\\n\\nRULES:\\n- Only output files that this task requires you to create or change\\n- Output complete file content (not diffs)\\n- No explanations, no numbered lists, no prose — ONLY the file blocks\\n- Only output files listed in the FILES TO MODIFY section\\n- CRITICAL: Only use packages found in the Dependency Manifest below. If you need functionality from a package not in the manifest, use built-in browser/Node APIs or the listed packages instead.\\n- CRITICAL: Match import styles to the source module. Use named imports ({ X }) for named exports, default imports for default exports. Check the EXISTING PROJECT FILES to confirm each module's export style.\\n- Preserve each file's existing export style (named vs default) when modifying it`;\n\nif (planDocument) {\n  systemMessage += `\\n\\nARCHITECTURE REFERENCE (follow this plan):\\n${planDocument}`;\n}\n\nconst researchDocs = input.research_docs || '';\nif (researchDocs) {\n  systemMessage += `\\n\\nPROJECT CONTEXT (from research agent):\\n${researchDocs}`;\n}\n\nreturn [{ json: {\n  model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507',\n  messages: [\n    { role: 'system', content: systemMessage },\n    { role: 'user', content: userContent }\n  ],\n  temperature: 0.7,\n  top_p: 0.8,\n  top_k: 20,\n  min_p: 0.0,\n  presence_penalty: 0.0,\n  repeat_penalty: 1.05,\n  max_tokens: 16384\n} }];"
+      },
+      "id": "cw-prepare",
+      "name": "CW: Prepare Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 300000 },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}" }
+          ]
+        }
+      },
+      "id": "cw-llm",
+      "name": "CW: Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2650, 300]
+    },
+
+    {"_comment": "=== PHASE 2: MODIFIED — CW: Parse Response (minor: reads from _currentP2) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\nconst stashed = $('P2: Stash Context').first().json;\nreturn [{ json: { files, task: stashed.task, project_id: stashed.project_id, project_goal: stashed.project_goal } }];"
+      },
+      "id": "cw-parse",
+      "name": "CW: Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2850, 300]
+    },
+
+    {"_comment": "=== PHASE 2: NEW — P2: Prepare Write (simplified, updates file cache) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Replaces Chunk: Prepare Write\n// Simplified write prep + updates _allFileContents cache so later chunks see fresh content\nconst stashed = $('P2: Stash Context').first().json;\nconst chunkFiles = stashed.chunk_files || [];\nconst newFiles = $json.files || [];\nconst projectId = $json.project_id || stashed.project_id;\n\n// Include all files the Code Writer produced\nlet filteredFiles = newFiles;\n\n// Handle package.json merge: preserve existing deps, add new ones\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nfor (const newFile of filteredFiles) {\n  if (newFile.path === 'package.json' || newFile.path.endsWith('/package.json')) {\n    const existing = allFiles.find(f => f.path === newFile.path);\n    if (existing) {\n      try {\n        const existingPkg = JSON.parse(existing.content);\n        const newPkg = JSON.parse(newFile.content);\n        newPkg.dependencies = { ...(existingPkg.dependencies || {}), ...(newPkg.dependencies || {}) };\n        newPkg.devDependencies = { ...(existingPkg.devDependencies || {}), ...(newPkg.devDependencies || {}) };\n        newFile.content = JSON.stringify(newPkg, null, 2);\n      } catch(e) {}\n    }\n  }\n}\n\n// Update the in-memory file cache so later chunks see fresh content\nfor (const newFile of filteredFiles) {\n  const idx = allFiles.findIndex(f => f.path === newFile.path);\n  if (idx >= 0) {\n    allFiles[idx] = { path: newFile.path, content: newFile.content };\n  } else {\n    allFiles.push({ path: newFile.path, content: newFile.content });\n  }\n}\nstaticData._allFileContents = allFiles;\n\nif (filteredFiles.length === 0) {\n  return [{ json: { project_id: projectId, files: [], _skipWrite: true } }];\n}\n\nreturn [{ json: { project_id: projectId, files: filteredFiles } }];"
+      },
+      "id": "p2-prepare-write",
+      "name": "P2: Prepare Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3050, 300]
+    },
+
+    {"_comment": "=== PHASE 2: KEEP — Chunk: Write Files (reused from v1, renamed to P2: Write Files) ==="},
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-batch' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: $json.files }) }}",
+        "options": {}
+      },
+      "id": "p2-write-files",
+      "name": "P2: Write Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3250, 300],
+      "onError": "continueRegularOutput"
+    },
+
+    {"_comment": "=== PHASE 2: NEW — P2: Store Result + check queue ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// Accumulates results, checks remaining queue from data pipeline (not static data)\nconst staticData = $getWorkflowStaticData('global');\nconst stashed = $('P2: Stash Context').first().json;\nconst task = stashed.task || {};\nconst taskId = task.task_id || 'unknown';\nconst chunkFiles = stashed.chunk_files || [];\nconst remainingQueue = stashed._p2Queue || [];\nconst writtenFiles = $json.files_written || ($json.files || []).map(f => f.path || f) || [];\n\nif (!staticData.p2Results) staticData.p2Results = [];\nstaticData.p2Results.push({\n  task_id: taskId,\n  chunk_files: chunkFiles,\n  files_written: writtenFiles\n});\n\nconst hasMore = remainingQueue.length > 0;\nreturn [{ json: { _hasMore: hasMore, _p2Queue: remainingQueue, task_id: taskId, files_written: writtenFiles } }];"
+      },
+      "id": "p2-store",
+      "name": "P2: Store Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3450, 300]
+    },
+
+    {"_comment": "=== PHASE 2: NEW — P2: More? (If node, single loop gate) ==="},
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "more-check",
+              "leftValue": "={{ $json._hasMore }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      },
+      "id": "p2-more",
+      "name": "P2: More?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3650, 300]
+    },
+
+    {"_comment": "=== PHASE 2: NEW — P2: Get Next (shifts from queue, loops back) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// Get next item from queue passed through data pipeline\nconst queue = $json._p2Queue || [];\nconst next = queue[0] || {};\n// Pass remaining queue to next iteration\nnext._p2Queue = queue.slice(1);\nreturn [{ json: next }];"
+      },
+      "id": "p2-next",
+      "name": "P2: Get Next",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3850, 200]
+    },
+
+    {"_comment": "=== PHASE 3: REVIEW (full-project review, single pass) ==="},
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $('Prepare Planner Input').first().json.project_id + '/files-content' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "p3-refetch",
+      "name": "P3: Re-fetch All Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3850, 500],
+      "onError": "continueRegularOutput"
+    },
+
+    {"_comment": "=== PHASE 3: NEW — P3: Full Review Build (cross-file consistency check prompt) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Full-project cross-file review prompt\n// Reviewer sees ALL files at once — catches import/export mismatches, type errors, missing deps\nconst allFiles = $json.files || [];\nconst staticData = $getWorkflowStaticData('global');\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst projectGoal = plannerInput.project_goal || '';\nconst deps = staticData._projectDeps || [];\n\n// Build tasks summary\nconst taskSummaries = (staticData.allTasks || []).map(t =>\n  `${t.task_id}: ${t.description.substring(0, 200)}`\n).join('\\n');\n\n// Format all files for review\nconst allFilesFormatted = allFiles\n  .filter(f => f.path.match(/\\.(ts|tsx|js|jsx|json|css|html)$/) && !f.path.includes('node_modules'))\n  .map(f => `### ${f.path}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``)\n  .join('\\n\\n');\n\nreturn [{\n  json: {\n    model: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m',\n    messages: [{\n      role: 'user',\n      content: `You are a Senior Code Reviewer performing a FULL PROJECT REVIEW.\\nYou are reviewing ALL files in the project after all coding tasks have been completed.\\n\\nYour job is to find cross-file issues that a per-file review would miss:\\n1. IMPORT/EXPORT MISMATCHES: imports that reference exports that don't exist, wrong import style (named vs default)\\n2. TYPE MISMATCHES: function signatures that don't match their call sites across files\\n3. DEPENDENCY ISSUES: imports of packages not in package.json\\n4. MISSING FILES: components or modules imported but never created\\n5. CRITICAL BUGS: null reference risks, unhandled promise rejections\\n\\nOnly flag real bugs and cross-file issues, skip style preferences.\\n\\nProject Goal: ${projectGoal}\\n\\nTasks Completed:\\n${taskSummaries}\\n\\nInstalled Packages: ${deps.join(', ')}\\n\\nALL PROJECT FILES:\\n${allFilesFormatted}\\n\\nReturn ONLY valid JSON (no markdown, no explanation):\\n{\\n  \"overall_quality\": number (0-100),\\n  \"cross_file_consistent\": boolean,\\n  \"fixes_needed\": [\\n    {\\n      \"file\": \"path/to/file.ts\",\\n      \"severity\": \"critical\" | \"high\" | \"medium\",\\n      \"issue\": \"description of what is wrong\",\\n      \"fix_instruction\": \"specific instruction for what to change\",\\n      \"related_files\": [\"path/to/other.ts\"]\\n    }\\n  ],\\n  \"summary\": \"one paragraph overall assessment\"\\n}\\n\\nRULES:\\n- fixes_needed must be an array (empty if everything is clean)\\n- Each fix must reference a specific file path\\n- fix_instruction must be actionable — the coder will receive ONLY this instruction and the file content\\n- related_files lists other files the coder should see for context when fixing this file\\n- Focus on critical and high severity issues. Skip medium unless fewer than 5 total issues.`\n    }],\n    temperature: 0.6,\n    top_p: 0.95,\n    top_k: 20,\n    min_p: 0.0,\n    presence_penalty: 0.0,\n    max_tokens: 32768\n  }\n}];"
+      },
+      "id": "p3-review-build",
+      "name": "P3: Full Review Build",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4050, 500]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 300000 },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}" }
+          ]
+        }
+      },
+      "id": "p3-review-llm",
+      "name": "P3: Review LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4250, 500]
+    },
+
+    {"_comment": "=== PHASE 3: NEW — P3: Review Parse (checks reasoning_content fallback) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Parses cross-file review format with fixes_needed[]\n// Checks reasoning_content as fallback (Qwen 3.5 reasoning model puts output there)\nconst raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nconst jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\nlet review;\ntry {\n  review = JSON.parse(jsonMatch ? jsonMatch[0] : content);\n} catch (e) {\n  review = { overall_quality: 0, cross_file_consistent: true, fixes_needed: [], summary: 'Review parse failed: ' + content.substring(0, 200) };\n}\n\nconst fixes = review.fixes_needed || [];\nconst needsFix = fixes.length > 0 && fixes.some(f => f.severity === 'critical' || f.severity === 'high');\nconst projectId = $('Prepare Planner Input').first().json.project_id;\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData._reviewResult = review;\n\nreturn [{ json: {\n  review,\n  needs_fix: needsFix,\n  fixes_needed: fixes,\n  project_id: projectId\n} }];"
+      },
+      "id": "p3-review-parse",
+      "name": "P3: Review Parse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4450, 500]
+    },
+
+    {"_comment": "=== PHASE 3: NEW — P3: Needs Fix? (branches to Phase 4 or Phase 6) ==="},
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "fix-check",
+              "leftValue": "={{ $json.needs_fix }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      },
+      "id": "p3-needs-fix",
+      "name": "P3: Needs Fix?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4650, 500]
+    },
+
+    {"_comment": "=== PHASE 4: FIX (targeted fixes from review feedback) ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Builds targeted fix prompt from review feedback\n// Only files flagged in fixes_needed get sent to the coder\nconst fixes = $json.fixes_needed || [];\nconst projectId = $json.project_id;\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\n\n// Collect files to fix + related context files\nconst filesToFix = new Set(fixes.map(f => f.file));\nconst contextFiles = new Set();\nfixes.forEach(f => (f.related_files || []).forEach(rf => contextFiles.add(rf)));\n\n// Build fix instructions\nconst fixInstructions = fixes.map(f =>\n  `FILE: ${f.file}\\nSEVERITY: ${f.severity}\\nISSUE: ${f.issue}\\nFIX: ${f.fix_instruction}`\n).join('\\n\\n');\n\n// Build existing files section\nconst relevantPaths = new Set([...filesToFix, ...contextFiles]);\nconst existingFilesSection = allFiles\n  .filter(f => relevantPaths.has(f.path))\n  .map(f => {\n    const marker = filesToFix.has(f.path) ? ' (NEEDS FIX)' : ' (CONTEXT ONLY - read but do not output)';\n    return `### ${f.path}${marker}\\n\\`\\`\\`\\n${f.content}\\n\\`\\`\\``;\n  })\n  .join('\\n\\n');\n\nconst filesToOutput = [...filesToFix];\n\nlet systemMessage = `You are a Senior Full-Stack Developer. You are fixing specific issues found during code review.\\n\\nFor EACH file you fix, output EXACTLY this format:\\n### path/to/file.ts\\n\\`\\`\\`ts\\n[complete file content]\\n\\`\\`\\`\\n\\nRULES:\\n- Only output files marked as NEEDS FIX\\n- Output complete file content (not diffs)\\n- No explanations, no prose — ONLY the file blocks\\n- CRITICAL: Only use packages found in the Dependency Manifest below.\\n- CRITICAL: Match import styles to the source module exactly.`;\n\nconst researchDocs = staticData._researchDocs || '';\nif (researchDocs) {\n  systemMessage += `\\n\\nPROJECT CONTEXT:\\n${researchDocs}`;\n}\n\nconst userContent = `Fix the following issues found during code review:\\n\\n${fixInstructions}\\n\\nFILES TO FIX (only output these):\\n${filesToOutput.join('\\n')}\\n\\nCURRENT FILE CONTENTS:\\n${existingFilesSection}`;\n\nreturn [{ json: {\n  model: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507',\n  messages: [\n    { role: 'system', content: systemMessage },\n    { role: 'user', content: userContent }\n  ],\n  temperature: 0.7,\n  top_p: 0.8,\n  top_k: 20,\n  min_p: 0.0,\n  presence_penalty: 0.0,\n  repeat_penalty: 1.05,\n  max_tokens: 16384,\n  _project_id: projectId\n} }];"
+      },
+      "id": "p4-fix-build",
+      "name": "P4: Fix Build",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4850, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 300000 },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.LLM_API_KEY }}" }
+          ]
+        }
+      },
+      "id": "p4-fix-llm",
+      "name": "P4: Fix LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5050, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// NEW: Parse fix response, update cache, prepare for write\nconst raw = $json.choices[0].message.content || $json.choices[0].message.reasoning_content || '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) {\n  content = content.split('</think>').pop().trim();\n}\nconst files = [];\nconst seen = new Set();\nconst re = /###\\s+((?:[\\w.-]+\\/)*(?:\\.\\w[\\w.-]*|[\\w.-]+\\.(?:ts|tsx|js|jsx|json|md|yml|yaml|env|prisma|css|html|sh|txt|lock|toml|cfg|ini)|Dockerfile|Makefile|LICENSE|CHANGELOG))\\s*\\n```[\\w]*\\n([\\s\\S]*?)```/g;\nlet m;\nwhile ((m = re.exec(content)) !== null) {\n  const path = m[1].trim();\n  const fileContent = m[2];\n  if (path && !seen.has(path)) {\n    seen.add(path);\n    files.push({ path, content: fileContent });\n  }\n}\n\n// Update in-memory cache\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nfor (const newFile of files) {\n  const idx = allFiles.findIndex(f => f.path === newFile.path);\n  if (idx >= 0) {\n    allFiles[idx] = { path: newFile.path, content: newFile.content };\n  } else {\n    allFiles.push({ path: newFile.path, content: newFile.content });\n  }\n}\nstaticData._allFileContents = allFiles;\nstaticData._fixResults = files.map(f => f.path);\n\nconst projectId = $('Prepare Planner Input').first().json.project_id;\n\nif (files.length === 0) {\n  return [{ json: { project_id: projectId, files: [], _skipWrite: true } }];\n}\nreturn [{ json: { project_id: projectId, files } }];"
+      },
+      "id": "p4-fix-parse",
+      "name": "P4: Fix Parse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5250, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-batch' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: $json.files }) }}",
+        "options": {}
+      },
+      "id": "p4-fix-write",
+      "name": "P4: Fix Write",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5450, 400],
+      "onError": "continueRegularOutput"
+    },
+
+    {"_comment": "=== PHASE 6: FINALIZE ==="},
+
+    {
+      "parameters": {
+        "jsCode": "// MODIFIED: Includes review + fix results from Phase 3 & 4\nconst staticData = $getWorkflowStaticData('global');\nconst plannerInput = $('Prepare Planner Input').first().json;\nconst p2Results = staticData.p2Results || [];\nconst reviewResult = staticData._reviewResult || {};\nconst fixResults = staticData._fixResults || [];\nconst allTasks = staticData.allTasks || [];\n\n// Build task-level results from p2Results\nconst taskResults = new Map();\nfor (const r of p2Results) {\n  if (!taskResults.has(r.task_id)) {\n    const task = allTasks.find(t => t.task_id === r.task_id);\n    taskResults.set(r.task_id, {\n      task_id: r.task_id,\n      description: task ? task.description.substring(0, 200) : '',\n      files_written: [],\n      chunks_processed: 0\n    });\n  }\n  const entry = taskResults.get(r.task_id);\n  entry.files_written.push(...(r.files_written || []));\n  entry.chunks_processed++;\n}\n\nconst allFilesWritten = p2Results.flatMap(r => r.files_written || []);\n\nreturn [{ json: {\n  status: 'completed',\n  project_id: plannerInput.project_id,\n  project_goal: plannerInput.project_goal,\n  tasks_completed: taskResults.size,\n  task_results: [...taskResults.values()],\n  review: {\n    overall_quality: reviewResult.overall_quality || 0,\n    cross_file_consistent: reviewResult.cross_file_consistent || false,\n    fixes_applied: fixResults,\n    summary: reviewResult.summary || ''\n  },\n  files_written: [...new Set(allFilesWritten)]\n} }];"
+      },
+      "id": "aggregate",
+      "name": "Aggregate All Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5650, 500]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const result = $json;\nreturn [{ json: {\n  operation: 'set',\n  project_id: result.project_id,\n  state: {\n    status: 'completed',\n    completed_tasks: result.task_results.map(t => t.task_id),\n    files: result.files_written\n  }\n} }];"
+      },
+      "id": "prepare-mem-update",
+      "name": "Prepare Memory Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5850, 500]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const op = $json;\nconst store = $getWorkflowStaticData('global');\nconst projectId = op.project_id;\nif (op.operation === 'set') {\n  const existing = store[projectId] || {};\n  store[projectId] = { ...existing, ...op.state, project_id: projectId, last_updated: new Date().toISOString() };\n}\nreturn [{ json: store[projectId] || { project_id: projectId } }];"
+      },
+      "id": "update-memory",
+      "name": "Update Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [6050, 500]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const aggregate = $('Aggregate All Results').first().json;\nreturn [{ json: aggregate }];"
+      },
+      "id": "build-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [6250, 500]
+    },
+
+    {"_comment": "=== MODEL SWITCHING: Load/unload via model-manager HTTP bridge on host:3458 ==="},
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "load-planner-model",
+      "name": "Load Planner Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1150, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const loadResp = $json;\nif (loadResp.status !== 'loaded') throw new Error('Load Planner Model failed: ' + JSON.stringify(loadResp));\nreturn [{ json: $('Prepare Planner Input').first().json }];"
+      },
+      "id": "restore-planner-input",
+      "name": "Restore: Planner Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/unload' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "unload-planner-model",
+      "name": "Unload Planner Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1750, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "load-coder-model",
+      "name": "Load Coder Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1950, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const loadResp = $json;\nif (loadResp.status !== 'loaded') throw new Error('Load Coder Model failed: ' + JSON.stringify(loadResp));\nreturn [{ json: $('Planner: Parse Response').first().json }];"
+      },
+      "id": "restore-after-load-coder",
+      "name": "Restore: After Load Coder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2150, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/unload' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "unload-coder-model",
+      "name": "Unload Coder Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3750, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "load-reviewer-model",
+      "name": "Load Reviewer Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3950, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const loadResp = $json;\nif (loadResp.status !== 'loaded') throw new Error('Load Reviewer Model failed: ' + JSON.stringify(loadResp));\nreturn [{ json: { project_id: $('Extract Input').first().json.project_id } }];"
+      },
+      "id": "restore-after-load-reviewer",
+      "name": "Restore: After Load Reviewer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4150, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/unload' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.PLANNER_MODEL || 'qwen3.5-27b@q4_k_m' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "unload-reviewer-model",
+      "name": "Unload Reviewer Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4350, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('P3: Review Parse').first().json }];"
+      },
+      "id": "restore-after-unload-reviewer",
+      "name": "Restore: After Unload Reviewer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4550, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/load' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "load-fixer-model",
+      "name": "Load Fixer Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4750, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const loadResp = $json;\nif (loadResp.status !== 'loaded') throw new Error('Load Fixer Model failed: ' + JSON.stringify(loadResp));\nreturn [{ json: $('P3: Needs Fix?').first().json }];"
+      },
+      "id": "restore-after-load-fixer",
+      "name": "Restore: After Load Fixer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4950, 100]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LM_STUDIO_HOST || 'http://10.0.0.100:1234') + '/api/v1/models/unload' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ identifier: $env.CODER_MODEL || 'qwen/qwen3-30b-a3b-2507' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "unload-fixer-model",
+      "name": "Unload Fixer Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5550, 100],
+      "onError": "continueRegularOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('P4: Fix Write').first().json }];"
+      },
+      "id": "restore-after-unload-fixer",
+      "name": "Restore: After Unload Fixer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5700, 100]
+    }
+
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Extract Input", "type": "main", "index": 0 }]] },
+    "Extract Input": { "main": [[{ "node": "Init Memory", "type": "main", "index": 0 }]] },
+    "Init Memory": { "main": [[{ "node": "Fetch Project Files", "type": "main", "index": 0 }]] },
+    "Fetch Project Files": { "main": [[{ "node": "Prepare Planner Input", "type": "main", "index": 0 }]] },
+    "Prepare Planner Input": { "main": [[{ "node": "Load Planner Model", "type": "main", "index": 0 }]] },
+    "Load Planner Model": { "main": [[{ "node": "Restore: Planner Input", "type": "main", "index": 0 }]] },
+    "Restore: Planner Input": { "main": [[{ "node": "Planner: Build Request", "type": "main", "index": 0 }]] },
+    "Planner: Build Request": { "main": [[{ "node": "Planner: Call LM Studio", "type": "main", "index": 0 }]] },
+    "Planner: Call LM Studio": { "main": [[{ "node": "Planner: Parse Response", "type": "main", "index": 0 }]] },
+    "Planner: Parse Response": { "main": [[{ "node": "Unload Planner Model", "type": "main", "index": 0 }]] },
+    "Unload Planner Model": { "main": [[{ "node": "Load Coder Model", "type": "main", "index": 0 }]] },
+    "Load Coder Model": { "main": [[{ "node": "Restore: After Load Coder", "type": "main", "index": 0 }]] },
+    "Restore: After Load Coder": { "main": [[{ "node": "Spread Tasks", "type": "main", "index": 0 }]] },
+    "Spread Tasks": { "main": [[{ "node": "P2: Stash Context", "type": "main", "index": 0 }]] },
+    "P2: Stash Context": { "main": [[{ "node": "P2: Build Code Input", "type": "main", "index": 0 }]] },
+    "P2: Build Code Input": { "main": [[{ "node": "CW: Prepare Message", "type": "main", "index": 0 }]] },
+    "CW: Prepare Message": { "main": [[{ "node": "CW: Call LM Studio", "type": "main", "index": 0 }]] },
+    "CW: Call LM Studio": { "main": [[{ "node": "CW: Parse Response", "type": "main", "index": 0 }]] },
+    "CW: Parse Response": { "main": [[{ "node": "P2: Prepare Write", "type": "main", "index": 0 }]] },
+    "P2: Prepare Write": { "main": [[{ "node": "P2: Write Files", "type": "main", "index": 0 }]] },
+    "P2: Write Files": { "main": [[{ "node": "P2: Store Result", "type": "main", "index": 0 }]] },
+    "P2: Store Result": { "main": [[{ "node": "P2: More?", "type": "main", "index": 0 }]] },
+    "P2: More?": {
+      "main": [
+        [{ "node": "P2: Get Next", "type": "main", "index": 0 }],
+        [{ "node": "Unload Coder Model", "type": "main", "index": 0 }]
+      ]
+    },
+    "P2: Get Next": { "main": [[{ "node": "P2: Stash Context", "type": "main", "index": 0 }]] },
+    "Unload Coder Model": { "main": [[{ "node": "Load Reviewer Model", "type": "main", "index": 0 }]] },
+    "Load Reviewer Model": { "main": [[{ "node": "Restore: After Load Reviewer", "type": "main", "index": 0 }]] },
+    "Restore: After Load Reviewer": { "main": [[{ "node": "P3: Re-fetch All Files", "type": "main", "index": 0 }]] },
+    "P3: Re-fetch All Files": { "main": [[{ "node": "P3: Full Review Build", "type": "main", "index": 0 }]] },
+    "P3: Full Review Build": { "main": [[{ "node": "P3: Review LLM", "type": "main", "index": 0 }]] },
+    "P3: Review LLM": { "main": [[{ "node": "P3: Review Parse", "type": "main", "index": 0 }]] },
+    "P3: Review Parse": { "main": [[{ "node": "Unload Reviewer Model", "type": "main", "index": 0 }]] },
+    "Unload Reviewer Model": { "main": [[{ "node": "Restore: After Unload Reviewer", "type": "main", "index": 0 }]] },
+    "Restore: After Unload Reviewer": { "main": [[{ "node": "P3: Needs Fix?", "type": "main", "index": 0 }]] },
+    "P3: Needs Fix?": {
+      "main": [
+        [{ "node": "Load Fixer Model", "type": "main", "index": 0 }],
+        [{ "node": "Aggregate All Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Load Fixer Model": { "main": [[{ "node": "Restore: After Load Fixer", "type": "main", "index": 0 }]] },
+    "Restore: After Load Fixer": { "main": [[{ "node": "P4: Fix Build", "type": "main", "index": 0 }]] },
+    "P4: Fix Build": { "main": [[{ "node": "P4: Fix LLM", "type": "main", "index": 0 }]] },
+    "P4: Fix LLM": { "main": [[{ "node": "P4: Fix Parse", "type": "main", "index": 0 }]] },
+    "P4: Fix Parse": { "main": [[{ "node": "P4: Fix Write", "type": "main", "index": 0 }]] },
+    "P4: Fix Write": { "main": [[{ "node": "Unload Fixer Model", "type": "main", "index": 0 }]] },
+    "Unload Fixer Model": { "main": [[{ "node": "Restore: After Unload Fixer", "type": "main", "index": 0 }]] },
+    "Restore: After Unload Fixer": { "main": [[{ "node": "Aggregate All Results", "type": "main", "index": 0 }]] },
+    "Aggregate All Results": { "main": [[{ "node": "Prepare Memory Update", "type": "main", "index": 0 }]] },
+    "Prepare Memory Update": { "main": [[{ "node": "Update Memory", "type": "main", "index": 0 }]] },
+    "Update Memory": { "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "versionId": "v2-batch-then-review"
+}
