@@ -27,6 +27,59 @@ function FileTree({ files }) {
   )
 }
 
+function SuggestionList({ suggestions, onUseSuggestion }) {
+  const [expandedIdx, setExpandedIdx] = useState(null)
+
+  return (
+    <div className="space-y-2 pt-1">
+      <p className="text-xs font-semibold text-default-500 uppercase tracking-wider">Suggested next steps</p>
+      <div className="space-y-2">
+        {suggestions.map((s, i) => {
+          // Support both { preview, detail } objects and plain strings
+          const isStructured = typeof s === 'object' && s.preview
+          const preview = isStructured ? s.preview : (s.length > 120 ? s.substring(0, 120) + '...' : s)
+          const detail = isStructured ? s.detail : s
+          const isExpanded = expandedIdx === i
+
+          return (
+            <div key={i} className="bg-primary-50 rounded-xl overflow-hidden border border-primary-100 transition-all">
+              {/* Preview row — always visible */}
+              <div
+                className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-primary-100 transition-colors"
+                onClick={() => setExpandedIdx(isExpanded ? null : i)}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  className={`text-primary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                  <path d="M9 18l6-6-6-6"/>
+                </svg>
+                <span className="text-sm font-medium text-primary-700 flex-1">{preview}</span>
+              </div>
+
+              {/* Expanded detail — shown on click */}
+              {isExpanded && (
+                <div className="px-3 pb-3 space-y-2">
+                  <div className="bg-white/60 rounded-lg px-3 py-2.5 border border-primary-100">
+                    <p className="text-xs text-default-600 leading-relaxed whitespace-pre-wrap">{detail}</p>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onUseSuggestion?.(detail) }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-medium hover:bg-primary-600 transition-colors"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M5 12h14M12 5l7 7-7 7"/>
+                    </svg>
+                    Use as next prompt
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function ResultMessage({ message, onUseSuggestion }) {
   const [showFiles, setShowFiles] = useState(false)
   const data = message.metadata || {}
@@ -73,21 +126,7 @@ export default function ResultMessage({ message, onUseSuggestion }) {
             )}
             {/* Suggestions for next prompt */}
             {data.suggestions?.length > 0 && (
-              <div className="space-y-2 pt-1">
-                <p className="text-xs font-semibold text-default-500 uppercase tracking-wider">Suggested next steps</p>
-                <div className="space-y-1.5">
-                  {data.suggestions.map((s, i) => (
-                    <div key={i} className="flex items-start gap-2 bg-primary-50 rounded-lg px-3 py-2.5 cursor-pointer hover:bg-primary-100 hover:shadow-sm transition-all group"
-                      onClick={() => onUseSuggestion?.(s)}
-                      title="Click to use as next prompt"
-                    >
-                      <span className="text-primary text-xs mt-0.5 shrink-0">→</span>
-                      <span className="text-sm text-primary-700 leading-relaxed flex-1">{s}</span>
-                      <span className="text-[10px] text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5 whitespace-nowrap">use →</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <SuggestionList suggestions={data.suggestions} onUseSuggestion={onUseSuggestion} />
             )}
             <p className="text-[10px] text-default-400">
               {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

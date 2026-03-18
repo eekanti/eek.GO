@@ -34,7 +34,7 @@ export default function useSSE(projectId) {
       } catch {}
     }
 
-    const events = ['pipeline_started', 'planning_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
+    const events = ['pipeline_started', 'planning_complete', 'research_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
     events.forEach(evt => es.addEventListener(evt, handleEvent))
 
     es.onerror = () => {

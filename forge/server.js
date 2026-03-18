@@ -58,7 +58,8 @@ app.post('/api/status-callback', (req, res) => {
     planning_complete: `🗂️ Planned ${data?.task_count || 0} tasks`,
     task_written: `✍️ Wrote ${data?.task_id || 'task'}: ${(data?.files || []).join(', ')}`,
     review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
-    fix_applied: `🔧 Applied fixes`,
+    research_complete: `📚 Fetched docs for ${(data?.libraries_fetched || []).join(', ') || 'libraries'} (${data?.doc_count || 0} docs)`,
+    fix_applied: `🔧 Applied ${data?.fix_count || ''} fix${(data?.fix_count || 0) !== 1 ? 'es' : ''}: ${(data?.files_fixed || []).join(', ') || 'unknown files'}`,
     final_review_complete: `📋 Final review: ${data?.quality || '?'}/100`,
     pipeline_complete: `🎉 Pipeline finished! ${data?.tasks_completed || 0} tasks, ${data?.files_written?.length || 0} files`,
     pipeline_error: `⚠️ Error: ${data?.error || 'unknown'}`

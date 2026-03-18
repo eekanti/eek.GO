@@ -78,6 +78,56 @@ Callback nodes POST to `http://forge:3500/api/status-callback`. Verify:
 
 ---
 
+## Research Agent (Context7 MCP)
+
+### Research fetches 0 docs
+
+The Research node connects to the Context7 MCP gateway at `http://docky:8811/mcp`. Check:
+
+```bash
+docker ps | grep docky
+# Test MCP connectivity
+curl -X POST http://localhost:8811/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
+```
+
+### Wrong libraries fetched
+
+The Research node extracts deps from:
+1. `package.json` (if the project already has one)
+2. Planner task descriptions (scans for framework keywords)
+
+Priority libraries (fetched first): `react`, `next`, `vite`, `tailwindcss`, `express`, `prisma`, `framer-motion`, `@heroui/react`. Max 5 per run.
+
+### Research docs not reaching the coder
+
+Research docs are stored in `$getWorkflowStaticData('global')._researchDocs`. The `CW: Prepare Message` node includes them in the coder's system prompt under "PROJECT CONTEXT (from research agent)". Check that `_researchDocs` is populated after the Research node runs.
+
+### MCP session errors
+
+The MCP gateway uses Streamable HTTP with session IDs. The Research node initializes a fresh session per run. If the gateway restarts mid-session, the node gracefully falls back to no docs (pipeline continues).
+
+---
+
+## Coder Context
+
+### Missing CSS styles / broken imports across files
+
+The coder now receives ALL project files as context on every call (not just its chunk files). If styles are still missing:
+1. Check `P2: Build Code Input` — it should set `existingFiles = allFiles` (all files, not filtered)
+2. Check `CW: Prepare Message` — the header should say "FULL PROJECT CONTEXT"
+3. Verify the coder's prompt token count is >5,000 (check execution data for `CW: Call LM Studio` usage)
+
+### Coder only using 2% context
+
+With full project files + library docs, expect 10-30% context usage. If still very low:
+- The project may have very few files (normal for early iterations)
+- Library docs may not be fetching (check Research node)
+- The `_allFileContents` cache may be empty (check `Prepare Planner Input`)
+
+---
+
 ## eek-Forge
 
 ### "fetch failed" error in chat
