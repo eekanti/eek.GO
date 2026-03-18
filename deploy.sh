@@ -92,24 +92,11 @@ fi
 
 # --- n8n ---
 echo ""
-echo "Checking n8n..."
+echo "Deploying n8n..."
 
-N8N_DIR="/docker/stacks/n8n"
-if [ -d "$N8N_DIR" ]; then
-  # Copy pipeline env vars to n8n's .env if it exists
-  if [ -f "$N8N_DIR/.env" ]; then
-    ok "n8n stack found at $N8N_DIR"
-    echo "  Ensure these vars are in $N8N_DIR/.env and passed through n8n.yml:"
-    echo "    LM_STUDIO_URL, PLANNER_MODEL, CODER_MODEL, REVIEWER_MODEL"
-    echo "    FILE_API_URL, FILE_API_TOKEN, MCP_GATEWAY_URL, LLM_API_KEY"
-  fi
-
-  # Restart n8n to pick up any env changes
-  cd "$N8N_DIR"
-  $DOCKER_COMPOSE restart n8n 2>/dev/null && ok "n8n restarted" || warn "Could not restart n8n"
-else
-  warn "n8n stack not found at $N8N_DIR — deploy n8n separately"
-fi
+cd "$SCRIPT_DIR"
+$DOCKER_COMPOSE up -d
+ok "n8n container running"
 
 # Wait for n8n
 echo ""
@@ -134,28 +121,11 @@ echo "Importing workflows..."
 N8N_API="http://localhost:5678/api/v1"
 AUTH_HEADER="X-N8N-API-KEY: ${N8N_API_KEY}"
 
-WORKFLOW_ORDER=(
-  "01-Planner-Agent"
-  "02-Code-Writer-Agent"
-  "03-Project-Memory"
-  "04-Task-Processor"
-  "05-Combined-Reviewer-Agent"
-  "06-Chunk-Processor"
-  "07-Research-Agent"
-  "00-Master-Orchestrator"
-)
-
-for wf_name in "${WORKFLOW_ORDER[@]}"; do
-  wf_file="$SCRIPT_DIR/workflows/${wf_name}.json"
-  if [ -f "$wf_file" ]; then
-    RESULT=$(curl -sf -X POST "$N8N_API/workflows" \
-      -H "$AUTH_HEADER" \
-      -H "Content-Type: application/json" \
-      -d @"$wf_file" 2>&1) && ok "Imported $wf_name" || warn "Failed to import $wf_name (may already exist)"
-  else
-    warn "File not found: $wf_file"
-  fi
-done
+wf_file="$SCRIPT_DIR/workflows/eek-go.json"
+curl -sf -X POST "$N8N_API/workflows" \
+  -H "$AUTH_HEADER" \
+  -H "Content-Type: application/json" \
+  -d @"$wf_file" 2>&1 && ok "Imported eek-go" || warn "Failed to import eek-go (may already exist)"
 
 echo ""
 echo "==========================================="
@@ -164,9 +134,8 @@ echo "==========================================="
 echo ""
 echo "Next steps:"
 echo "  1. Open n8n at http://localhost:5678"
-echo "  2. Activate all imported workflows"
-echo "  3. Update workflow IDs in workflows/.env (WF_* vars)"
-echo "  4. Verify LM Studio is running: curl ${LM_STUDIO_URL:-http://10.0.0.100:1234/v1/chat/completions}"
-echo "  5. Open Forge at http://localhost:3500 to submit jobs"
-echo "  6. Or test via curl: POST to the Master Orchestrator webhook (see README)"
+echo "  2. Activate the eek-go workflow"
+echo "  3. Verify LM Studio is running: curl ${LM_STUDIO_URL:-http://10.0.0.100:1234/v1/chat/completions}"
+echo "  4. Open Forge at http://localhost:3500 to submit jobs"
+echo "  5. Or test via curl: POST to the coding-agent webhook"
 echo ""

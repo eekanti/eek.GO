@@ -1,66 +1,40 @@
-version: '3.8'
-
 services:
   n8n:
-    container_name: plexie-n8n
-    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    image: docker.n8n.io/n8nio/n8n
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      - 5678:5678
+    env_file:
+      - .env
+      - workflows/.env
     environment:
-      # Basic Configuration
-      - N8N_HOST=${SUBDOMAIN:-plexie}.${DOMAIN_NAME:-localhost}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - NODE_ENV=production
-      
-      # URLs (set to your server's actual URL)
-      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL:-https://plexie.yourdomain.com}
-      - WEBHOOK_URL=${WEBHOOK_URL:-https://plexie.yourdomain.com}
-      
-      # Security
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_EDITOR_BASE_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
+      - WEBHOOK_URL=https://${SUBDOMAIN}.${DOMAIN_NAME}/
       - N8N_SECURE_COOKIE=false
-      
-      # Timezone
-      - GENERIC_TIMEZONE=America/New_York
-      - TZ=America/New_York
-      
-      # Function Execution Permissions (for MCP servers)
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - TZ=${GENERIC_TIMEZONE}
       - NODE_FUNCTION_ALLOW_BUILTIN=https,http,url,querystring,path,os
       - NODE_FUNCTION_ALLOW_EXTERNAL=*
-      
-      # Community Packages Support
+      - NODES_EXCLUDE=[]
+      - N8N_COMMUNITY_PACKAGES_ENABLED=true
       - N8N_COMMUNITY_PACKAGES_ALLOW_TOOL_USAGE=true
-      - N8N_CUSTOM_EXTENSIONS=n8n-nodes-langchain
-      
-      # Local LLM Configuration (LM Studio)
-      - AI_PROVIDER=local
-      - LOCAL_AI_BASE_URL=http://10.0.0.100:1234/v1
-      - LOCAL_AI_MODEL=mistral-7b-instruct-v0.2  # Change to your actual model name
-      
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
     volumes:
       - /docker/appdata/n8n/data:/home/node/.n8n
       - /docker/appdata/n8n/local-files:/files
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      
+      - /sbin/zpool:/sbin/zpool:ro
+      - /dev/zfs:/dev/zfs:ro
+      - /data:/data:ro
     networks:
-      - n8n_network
-
-  # Optional: Redis for caching (if you want faster performance)
-  redis:
-    container_name: plexie-redis
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - /docker/appdata/redis/data:/data
-      
-    networks:
-      - n8n_network
+      - shared_net
 
 networks:
-  n8n_network:
-    driver: bridge
+  shared_net:
+    external: true
