@@ -184,6 +184,79 @@ app.get('/projects', (req, res) => {
   }
 });
 
+// POST /scrape — screenshot + CSS tokens + DOM summary of a URL
+app.post('/scrape', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  let browser;
+  try {
+    const { chromium } = require('playwright');
+    browser = await chromium.launch({
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Screenshot as base64
+    const screenshotBuf = await page.screenshot({ fullPage: false, type: 'png' });
+    const screenshot_b64 = screenshotBuf.toString('base64');
+
+    // Computed CSS tokens
+    const css_tokens = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const colors = new Set(), fonts = new Set(), spacing = new Set();
+      const css_vars = {};
+      for (const sheet of document.styleSheets) {
+        try {
+          for (const rule of sheet.cssRules) {
+            if (rule.style) {
+              ['color', 'background-color', 'border-color'].forEach(p => {
+                const v = rule.style.getPropertyValue(p); if (v) colors.add(v);
+              });
+              const ff = rule.style.getPropertyValue('font-family'); if (ff) fonts.add(ff);
+              ['margin', 'padding', 'gap', 'border-radius'].forEach(p => {
+                const v = rule.style.getPropertyValue(p); if (v) spacing.add(v);
+              });
+            }
+          }
+        } catch (e) {}
+      }
+      for (const prop of style) {
+        if (prop.startsWith('--')) css_vars[prop] = style.getPropertyValue(prop).trim();
+      }
+      return {
+        colors: [...colors].slice(0, 30),
+        fonts: [...fonts].slice(0, 10),
+        spacing: [...spacing].slice(0, 20),
+        css_vars
+      };
+    });
+
+    // DOM summary — tag + class + text snippet
+    const dom_summary = await page.evaluate(() => {
+      const nodes = [];
+      const walk = (el, depth) => {
+        if (depth > 4 || nodes.length > 80) return;
+        const cls = el.className && typeof el.className === 'string'
+          ? '.' + el.className.trim().replace(/\s+/g, '.') : '';
+        const text = el.childNodes.length === 1 && el.firstChild.nodeType === 3
+          ? el.firstChild.textContent.trim().slice(0, 60) : '';
+        nodes.push('  '.repeat(depth) + el.tagName.toLowerCase() + cls + (text ? ` "${text}"` : ''));
+        for (const child of el.children) walk(child, depth + 1);
+      };
+      walk(document.body, 0);
+      return nodes.join('\n');
+    });
+
+    res.json({ screenshot_b64, css_tokens, dom_summary });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
