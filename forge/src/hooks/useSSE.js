@@ -20,13 +20,19 @@ export default function useSSE(projectId) {
           dispatch({ type: 'SET_RUNNING', value: false })
         }
 
+        // Determine message type and role based on event
+        let role = 'status'
+        let messageType = 'status_update'
+        if (eventType === 'pipeline_complete') { role = 'assistant'; messageType = 'pipeline_result' }
+        if (eventType === 'plan_approval') { role = 'assistant'; messageType = 'plan_approval' }
+
         dispatch({
           type: 'ADD_MESSAGE',
           message: {
             id: Date.now(),
-            role: eventType === 'pipeline_complete' ? 'assistant' : 'status',
+            role,
             content: data.message || eventType,
-            message_type: eventType === 'pipeline_complete' ? 'pipeline_result' : 'status_update',
+            message_type: messageType,
             metadata: data,
             created_at: data.timestamp || new Date().toISOString(),
           }
@@ -34,7 +40,7 @@ export default function useSSE(projectId) {
       } catch {}
     }
 
-    const events = ['pipeline_started', 'planning_complete', 'research_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
+    const events = ['pipeline_started', 'planning_complete', 'plan_approval', 'plan_approved', 'research_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
     events.forEach(evt => es.addEventListener(evt, handleEvent))
 
     es.onerror = () => {

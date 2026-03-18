@@ -3,10 +3,12 @@ import UserMessage from './messages/UserMessage.jsx'
 import StatusMessage from './messages/StatusMessage.jsx'
 import ResultMessage from './messages/ResultMessage.jsx'
 import ErrorMessage from './messages/ErrorMessage.jsx'
+import PlanApprovalMessage from './messages/PlanApprovalMessage.jsx'
 
 function MessageRenderer({ message, onUseSuggestion }) {
   if (message.role === 'user') return <UserMessage message={message} />
   if (message.role === 'status') return <StatusMessage message={message} />
+  if (message.message_type === 'plan_approval') return <PlanApprovalMessage message={message} />
   if (message.message_type === 'pipeline_result') return <ResultMessage message={message} onUseSuggestion={onUseSuggestion} />
   if (message.message_type === 'error') return <ErrorMessage message={message} />
   return (

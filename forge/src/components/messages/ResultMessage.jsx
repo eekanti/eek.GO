@@ -80,6 +80,77 @@ function SuggestionList({ suggestions, onUseSuggestion }) {
   )
 }
 
+function PreviewPanel({ projectId }) {
+  const [status, setStatus] = useState('idle') // idle, loading, running, error
+  const [previewUrl, setPreviewUrl] = useState(null)
+  const [error, setError] = useState(null)
+
+  const startPreview = async () => {
+    setStatus('loading')
+    setError(null)
+    try {
+      const res = await fetch(`/api/project/${projectId}/preview/start`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to start')
+      setPreviewUrl(data.url)
+      setStatus('running')
+    } catch (e) {
+      setError(e.message)
+      setStatus('error')
+    }
+  }
+
+  const stopPreview = async () => {
+    await fetch(`/api/project/${projectId}/preview/stop`, { method: 'POST' })
+    setPreviewUrl(null)
+    setStatus('idle')
+  }
+
+  if (status === 'idle') {
+    return (
+      <Button size="sm" color="primary" variant="flat" onPress={startPreview}
+        startContent={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
+      >
+        Build & Preview
+      </Button>
+    )
+  }
+
+  if (status === 'loading') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-primary">
+        <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        Installing deps & starting dev server...
+      </div>
+    )
+  }
+
+  if (status === 'error') {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-danger">{error}</p>
+        <Button size="sm" variant="flat" onPress={startPreview}>Retry</Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
+          <span className="text-xs text-success-600 font-medium">Preview running</span>
+          <a href={previewUrl} target="_blank" rel="noopener" className="text-xs text-primary hover:underline">{previewUrl}</a>
+        </div>
+        <Button size="sm" variant="light" color="danger" onPress={stopPreview}>Stop</Button>
+      </div>
+      <div className="rounded-lg overflow-hidden border border-default-200 shadow-sm" style={{ height: '400px' }}>
+        <iframe src={previewUrl} className="w-full h-full border-0" title="Project Preview" />
+      </div>
+    </div>
+  )
+}
+
 export default function ResultMessage({ message, onUseSuggestion }) {
   const [showFiles, setShowFiles] = useState(false)
   const data = message.metadata || {}
@@ -124,6 +195,9 @@ export default function ResultMessage({ message, onUseSuggestion }) {
                 {showFiles && <FileTree files={data.files_written} />}
               </div>
             )}
+            {/* Preview */}
+            {data.project_id && <PreviewPanel projectId={data.project_id} />}
+
             {/* Suggestions for next prompt */}
             {data.suggestions?.length > 0 && (
               <SuggestionList suggestions={data.suggestions} onUseSuggestion={onUseSuggestion} />

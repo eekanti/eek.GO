@@ -6,7 +6,7 @@ import db, { ensureProject } from './db.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const app = express()
-app.use(express.json({ limit: '10mb' }))
+app.use(express.json({ limit: '100mb' }))
 
 const N8N_URL = process.env.N8N_URL || 'http://n8n:5678'
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook/coding-agent'
@@ -60,6 +60,8 @@ app.post('/api/status-callback', (req, res) => {
     review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
     research_complete: `📚 Fetched docs for ${(data?.libraries_fetched || []).join(', ') || 'libraries'} (${data?.doc_count || 0} docs)`,
     fix_applied: `🔧 Applied ${data?.fix_count || ''} fix${(data?.fix_count || 0) !== 1 ? 'es' : ''}: ${(data?.files_fixed || []).join(', ') || 'unknown files'}`,
+    plan_approval: `📋 Plan ready for review (${data?.task_count || 0} tasks, ${data?.total_files || 0} files)`,
+    plan_approved: `✅ Plan ${data?.action === 'edit' ? 'approved with edits' : 'approved'} — continuing...`,
     final_review_complete: `📋 Final review: ${data?.quality || '?'}/100`,
     pipeline_complete: `🎉 Pipeline finished! ${data?.tasks_completed || 0} tasks, ${data?.files_written?.length || 0} files`,
     pipeline_error: `⚠️ Error: ${data?.error || 'unknown'}`
@@ -67,9 +69,11 @@ app.post('/api/status-callback', (req, res) => {
 
   const content = statusMessages[event] || event
 
-  // Save as status message in chat history
+  // Save as message in chat history
+  const messageType = event === 'plan_approval' ? 'plan_approval' : 'status_update'
+  const role = event === 'plan_approval' ? 'assistant' : 'status'
   db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
-    .run(project_id, 'status', content, 'status_update', JSON.stringify({ event, ...data }))
+    .run(project_id, role, content, messageType, JSON.stringify({ event, project_id, ...data }))
 
   // If pipeline complete, also save a rich assistant result message
   if (event === 'pipeline_complete' && data) {
@@ -136,6 +140,34 @@ app.delete('/api/projects/:id', (req, res) => {
   db.prepare('DELETE FROM executions WHERE project_id = ?').run(id)
   db.prepare('DELETE FROM projects WHERE id = ?').run(id)
   res.json({ ok: true, deleted: id })
+})
+
+// ─── Plan approval / resume ────────────────────────────────────────────
+
+// Resume a paused pipeline execution (user approved/rejected the plan)
+app.post('/api/plan-respond', async (req, res) => {
+  const { execution_id, action, feedback } = req.body
+  if (!execution_id || !action) return res.status(400).json({ error: 'execution_id and action required' })
+
+  const N8N_URL = process.env.N8N_URL || 'http://n8n:5678'
+
+  try {
+    // Call the n8n Wait node's resume webhook
+    // The Wait node listens at: POST /webhook-waiting/{webhookSuffix}
+    const resumeUrl = `${N8N_URL}/webhook-waiting/plan-approved`
+    const resumeRes = await fetch(resumeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, feedback: feedback || '', execution_id }),
+    })
+    if (!resumeRes.ok) {
+      const text = await resumeRes.text()
+      return res.status(502).json({ error: `n8n resume failed: ${resumeRes.status}`, detail: text.slice(0, 200) })
+    }
+    res.json({ ok: true, action })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 // ─── Chat routes ───────────────────────────────────────────────────────
@@ -212,11 +244,50 @@ app.post('/api/chat/send', async (req, res) => {
   res.json({ message_id: result.lastInsertRowid })
 })
 
-// ─── File-API proxy routes (kept from original) ───────────────────────
+// ─── File-API proxy routes ─────────────────────────────────────────────
 
 app.get('/api/project/:id/files', async (req, res) => {
   try {
     const upstream = await fetch(`${FILE_API_URL}/projects/${req.params.id}/files`, {
+      headers: { Authorization: `Bearer ${FILE_API_TOKEN}` },
+    })
+    res.json(await upstream.json())
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ─── Preview routes (proxy to file-api) ────────────────────────────────
+
+app.post('/api/project/:id/preview/start', async (req, res) => {
+  try {
+    const upstream = await fetch(`${FILE_API_URL}/projects/${req.params.id}/preview/start`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${FILE_API_TOKEN}`, 'Content-Type': 'application/json' },
+    })
+    const data = await upstream.json()
+    if (!upstream.ok) return res.status(upstream.status).json(data)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/project/:id/preview/stop', async (req, res) => {
+  try {
+    const upstream = await fetch(`${FILE_API_URL}/projects/${req.params.id}/preview/stop`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${FILE_API_TOKEN}` },
+    })
+    res.json(await upstream.json())
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/preview/status', async (req, res) => {
+  try {
+    const upstream = await fetch(`${FILE_API_URL}/preview/status`, {
       headers: { Authorization: `Bearer ${FILE_API_TOKEN}` },
     })
     res.json(await upstream.json())

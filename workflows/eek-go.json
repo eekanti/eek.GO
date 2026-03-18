@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-03-18T20:24:42.741Z",
+  "updatedAt": "2026-03-18T22:46:34.806Z",
   "createdAt": "2026-03-17T03:35:25.543Z",
   "id": "PNOMGkCjzFGxf52E",
   "name": "eek-Go v2 (Batch-Then-Review)",
@@ -944,7 +944,7 @@
         500
       ],
       "parameters": {
-        "jsCode": "// Status callback to Forge \u2014 fire and forget\nconst http = require('http');\nconst event = 'planning_complete';\nconst projectId = $json.project_id || $getWorkflowStaticData('global')._currentProjectId || 'unknown';\nconst callbackData = { task_count: ($json.tasks || []).length, project_id: projectId };\n\ntry {\n  const body = JSON.stringify({ event, project_id: projectId, data: callbackData });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }\n  });\n  req.on('error', () => {});  // ignore errors \u2014 pipeline must not stop\n  req.write(body);\n  req.end();\n} catch(e) {}\n\nreturn [$input.all()[0]];  // pass through unchanged"
+        "jsCode": "// Status callback to Forge \u2014 fire and forget\nconst http = require('http');\nconst event = 'planning_complete';\nconst projectId = $json.project_id || $getWorkflowStaticData('global')._currentProjectId || 'unknown';\nconst callbackData = { task_count: ($json.tasks || []).length, project_id: projectId };\n\ntry {\n  const body = JSON.stringify({ event, project_id: projectId, data: callbackData });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }\n  });\n  req.on('error', () => {});  // ignore errors \u2014 pipeline must not stop\n  req.write(body);\n  req.end();\n} catch(e) {}\n\n// Stash plan for retrieval after Wait node\nconst staticData2 = $getWorkflowStaticData('global');\nstaticData2._pendingPlan = $input.all()[0].json;\n\nreturn [$input.all()[0]];  // pass through unchanged"
       }
     },
     {
@@ -1094,7 +1094,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "const raw = ($json.choices && $json.choices[0] && $json.choices[0].message)\n  ? ($json.choices[0].message.content || $json.choices[0].message.reasoning_content || '')\n  : '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nconst jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\nlet review;\ntry {\n  review = JSON.parse(jsonMatch ? jsonMatch[0] : content);\n} catch (e) {\n  review = { final_quality: 0, summary: 'Final review parse failed', suggestions: [] };\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData._finalReview = review;\n\n// Send callback to Forge\ntry {\n  const http = require('http');\n  const projectId = $('Prepare Planner Input').first().json.project_id || 'unknown';\n  const cbBody = JSON.stringify({\n    event: 'final_review_complete',\n    project_id: projectId,\n    data: { quality: review.final_quality, summary: review.summary, suggestions: review.suggestions }\n  });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(cbBody) }\n  });\n  req.on('error', () => {});\n  req.write(cbBody);\n  req.end();\n} catch(e) {}\n\nreturn [{ json: review }];"
+        "jsCode": "// Parse final review \u2014 robust JSON extraction\nconst msg = ($json.choices && $json.choices[0] && $json.choices[0].message) || {};\nlet raw = msg.content || '';\n\n// If content is empty/whitespace, try reasoning_content\nif (!raw.trim()) raw = msg.reasoning_content || '';\n\n// Strip thinking blocks\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\n\n// Strip markdown code fences\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\n\n// Try multiple parse strategies\nlet review;\ntry {\n  // Strategy 1: direct parse (content is pure JSON)\n  review = JSON.parse(content);\n} catch(e1) {\n  try {\n    // Strategy 2: extract JSON object with balanced braces\n    let depth = 0, start = -1, end = -1;\n    for (let i = 0; i < content.length; i++) {\n      if (content[i] === '{') { if (depth === 0) start = i; depth++; }\n      if (content[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }\n    }\n    if (start >= 0 && end > start) {\n      review = JSON.parse(content.substring(start, end));\n    } else {\n      throw new Error('No balanced JSON found');\n    }\n  } catch(e2) {\n    review = { final_quality: 0, summary: 'Final review parse failed: ' + e2.message, suggestions: [] };\n  }\n}\n\n// Normalize suggestions format (handle both string[] and {preview, detail}[] )\nif (review.suggestions) {\n  review.suggestions = review.suggestions.map(s => {\n    if (typeof s === 'string') return s;\n    if (s && s.preview) return s;\n    return String(s);\n  });\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData._finalReview = review;\n\n// Send callback to Forge\ntry {\n  const http = require('http');\n  const projectId = $('Prepare Planner Input').first().json.project_id || 'unknown';\n  const cbBody = JSON.stringify({\n    event: 'final_review_complete',\n    project_id: projectId,\n    data: { quality: review.final_quality, summary: review.summary, suggestions: review.suggestions }\n  });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(cbBody) }\n  });\n  req.on('error', () => {});\n  req.write(cbBody);\n  req.end();\n} catch(e) {}\n\nreturn [{ json: review }];"
       }
     },
     {
@@ -1878,127 +1878,172 @@
       },
       "_allFileContents": [
         {
-          "path": "src/App.jsx",
-          "content": "import React from 'react';\nimport './index.css';\nimport { useGameLogic } from './hooks/useGameLogic';\nimport CookieButton from './components/CookieButton';\nimport FloatingNumber from './components/FloatingNumber';\nimport GameHeader from './components/GameHeader';\nimport GameFooter from './components/GameFooter';\nimport { saveGame } from './utils/storage';\n\nfunction App() {\n  const {\n    score,\n    buildings,\n    elapsedSeconds,\n    buyBuilding,\n    handleClick,\n    floatingNumbers,\n    cookiesPerSecond,\n    spawnFloatingNumber,\n    isPulsing,\n    isSaving\n  } = useGameLogic();\n\n  // Auto-save every 5 seconds\n  const savePayload = React.useRef({ totalCookies: score, buildings });\n\n  React.useEffect(() => {\n    savePayload.current = { totalCookies: score, buildings };\n  }, [score, buildings]);\n\n  React.useEffect(() => {\n    const intervalId = setInterval(() => {\n      saveGame(savePayload.current);\n    }, 5000);\n\n    return () => clearInterval(intervalId);\n  }, []);\n\n  return (\n    <div className=\"app-container\">\n      <GameHeader score={score} CPS={cookiesPerSecond} isPulsing={isPulsing} isSaving={isSaving} />\n      <main className=\"center-content\">\n        <CookieButton onCookieClick={(x, y, val) => { handleClick(); spawnFloatingNumber(x, y, val); }} />\n        {floatingNumbers.map((number) => (\n          <FloatingNumber\n            key={number.id}\n            value={number.value}\n            x={number.x}\n            y={number.y}\n            drift={number.drift}\n            color={number.color}\n          />\n        ))}\n      </main>\n      <GameFooter \n        elapsedSeconds={elapsedSeconds} \n        buildings={buildings} \n        buyBuilding={buyBuilding} \n        currentScore={score}\n      />\n    </div>\n  );\n}\n\nexport default App;\n"
-        },
-        {
-          "path": "src/components/CookieButton.jsx",
-          "content": "import React, { useState } from 'react';\n\nconst CookieButton = ({ onCookieClick }) => {\n  const [isRotated, setIsRotated] = useState(false);\n\n  const handleClick = (e) => {\n    // Capture mouse coordinates and pass them along with click value\n    const x = e.clientX;\n    const y = e.clientY;\n    const clickValue = 1; // Default click value\n    \n    // Trigger rotation animation\n    setIsRotated(true);\n    \n    // Reset rotation after animation completes (300ms transition)\n    setTimeout(() => {\n      setIsRotated(false);\n    }, 300);\n    \n    // Pass coordinates and click value to parent function\n    onCookieClick(x, y, clickValue);\n  };\n\n  return (\n    <div className=\"cookie-container\">\n      <button \n        className={`cookie-button ${isRotated ? 'rotated' : ''}`}\n        onClick={handleClick}\n        aria-label=\"Cookie button\"\n        style={{\n          transition: 'transform 0.3s ease-out'\n        }}\n      >\n        {/* Cookie image with emoji */}\n        <div className=\"cookie-image\">\ud83c\udf6a</div>\n      </button>\n    </div>\n  );\n};\n\nexport default CookieButton;\n"
-        },
-        {
-          "path": "src/components/FloatingNumber.jsx",
-          "content": "import React, { useRef } from 'react';\n\nconst FloatingNumber = ({ value, x, y, drift, color }) => {\n  const isMounted = useRef(true);\n\n  // Cleanup on unmount\n  React.useEffect(() => {\n    return () => {\n      isMounted.current = false;\n    };\n  }, []);\n\n  return (\n    <div\n      className=\"floating-number\"\n      style={{\n        left: `${x}px`,\n        top: `${y}px`,\n        position: 'absolute',\n        pointerEvents: 'none',\n        userSelect: 'none',\n      }}\n    >\n      <span\n        style={{\n          color: color,\n          marginLeft: `${drift}px`,\n          display: 'inline-block',\n        }}\n      >\n        +{value}\n      </span>\n    </div>\n  );\n};\n\nexport default FloatingNumber;\n"
-        },
-        {
-          "path": "src/components/GameFooter.jsx",
-          "content": "import React from 'react';\nimport { formatNumber, formatTime } from '../utils/formatNumber';\n\nconst GameFooter = ({ elapsedSeconds, buildings, buyBuilding, currentScore }) => {\n  // Calculate dynamic next rank target using powers of ten\n  const nextRankTarget = Math.pow(10, Math.floor(Math.log10(currentScore)) + 1);\n  \n  // Calculate progress percentage based on dynamic target\n  const progressPercent = nextRankTarget > 0 ? (currentScore / nextRankTarget) * 100 : 0;\n\n  return (\n    <div className=\"game-footer\">\n      <div className=\"progress-bar-container\">\n        <div \n          className=\"progress-bar\" \n          style={{ width: `${Math.min(progressPercent, 100)}%` }}\n        />\n      </div>\n      <div className=\"timer\">{formatTime(elapsedSeconds)}</div>\n      <div className=\"shop\">\n        {buildings.map((building) => (\n          <button \n            key={building.id} \n            className=\"shop-button\"\n            onClick={() => buyBuilding(building.id)}\n            disabled={currentScore < building.cost}\n            style={{\n              opacity: currentScore >= building.cost ? 1 : 0.5,\n              cursor: currentScore >= building.cost ? 'pointer' : 'not-allowed'\n            }}\n          >\n            {building.name} - {formatNumber(building.cost)} cookies\n          </button>\n        ))}\n      </div>\n    </div>\n  );\n};\n\nexport default GameFooter;\n"
-        },
-        {
-          "path": "src/components/GameHeader.jsx",
-          "content": "import React from 'react';\n\nconst GameHeader = ({ score, CPS = 0, isPulsing, isSaving }) => {\n  return (\n    <div className=\"game-header\">\n      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>\n        <h1 \n          style={{ \n            fontSize: '3rem', \n            color: 'white', \n            marginBottom: '8px',\n            transition: 'transform 0.2s ease'\n          }}\n          className={isPulsing ? 'pulse-active' : ''}\n        >\n          {score.toLocaleString()}\n        </h1>\n        \n        {/* Auto-save indicator - disk icon */}\n        {isSaving && (\n          <span style={{ \n            fontSize: '1.2rem', \n            color: '#4CAF50',\n            animation: 'pulse 1s ease-in-out'\n          }}>\n            \ud83d\udcbe\n          </span>\n        )}\n      </div>\n      \n      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>\n        <svg \n          width=\"20\" \n          height=\"20\" \n          viewBox=\"0 0 24 24\" \n          fill=\"gold\"\n          xmlns=\"http://www.w3.org/2000/svg\"\n        >\n          <path d=\"M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z\"/>\n        </svg>\n        <span style={{ color: 'gold', fontSize: '1rem' }}>\n          {CPS.toFixed(1)} CPS\n        </span>\n      </div>\n    </div>\n  );\n};\n\nexport default GameHeader;\n"
-        },
-        {
-          "path": "src/hooks/useGameLogic.js",
-          "content": "import { useState, useEffect, useRef } from 'react';\nimport { loadGame, saveGame } from '../utils/storage';\n\nexport function useGameLogic() {\n  const [totalCookies, setTotalCookies] = useState(0);\n  const [clickValue, setClickValue] = useState(1);\n  const [floatingNumbers, setFloatingNumbers] = useState([]);\n  const [isPulsing, setIsPulsing] = useState(false);\n  const [isSaving, setIsSaving] = useState(false);\n  \n  // Initialize buildings state\n  const [buildings, setBuildings] = useState([\n    { id: 1, name: 'Cursor', cost: 15, count: 0, cps: 0.1 },\n    { id: 2, name: 'Grandma', cost: 100, count: 0, cps: 1 },\n    { id: 3, name: 'Farm', cost: 1100, count: 0, cps: 8 },\n  ]);\n\n  // Timer feature\n  const [elapsedSeconds, setElapsedSeconds] = useState(0);\n\n  // useRef to track current score synchronously\n  const currentScoreRef = useRef(totalCookies);\n  const isMounted = useRef(true);\n\n  useEffect(() => {\n    currentScoreRef.current = totalCookies;\n  }, [totalCookies]);\n\n  useEffect(() => {\n    const intervalId = setInterval(() => {\n      setElapsedSeconds(prev => prev + 1);\n    }, 1000);\n\n    return () => clearInterval(intervalId);\n  }, []);\n\n  // Derive cookiesPerSecond from buildings array\n  const cookiesPerSecond = buildings.reduce((total, building) => {\n    return total + (building.count * building.cps);\n  }, 0);\n\n  useEffect(() => {\n    const intervalId = setInterval(() => {\n      setTotalCookies(prev => prev + cookiesPerSecond);\n      \n      // Track CPS gains for visual feedback\n      if (cookiesPerSecond > 0) {\n        setIsPulsing(true);\n        setTimeout(() => {\n          setIsPulsing(false);\n        }, 500);\n      }\n    }, 1000);\n\n    return () => clearInterval(intervalId);\n  }, [cookiesPerSecond]);\n\n  // Load saved game state on mount\n  useEffect(() => {\n    const savedState = loadGame();\n    setTotalCookies(savedState.totalCookies || 0);\n    setBuildings(savedState.buildings || [\n      { id: 1, name: 'Cursor', cost: 15, count: 0, cps: 0.1 },\n      { id: 2, name: 'Grandma', cost: 100, count: 0, cps: 1 },\n      { id: 3, name: 'Farm', cost: 1100, count: 0, cps: 8 },\n    ]);\n  }, []);\n\n  const increment = (amount = 1) => {\n    setTotalCookies(prev => prev + amount);\n  };\n\n  const handleClick = () => {\n    increment(clickValue);\n  };\n\n  const buyBuilding = (buildingId) => {\n    const building = buildings.find(b => b.id === buildingId);\n    \n    if (!building) return;\n\n    // Use ref value for affordability check to prevent race condition\n    if (currentScoreRef.current < building.cost) {\n      return;\n    }\n\n    // Deduct cost from score\n    setTotalCookies(prev => prev - building.cost);\n\n    // Update building count\n    setBuildings(prevBuildings =>\n      prevBuildings.map(b =>\n        b.id === buildingId\n          ? { ...b, count: b.count + 1, cost: Math.floor(b.cost * 1.15) }\n          : b\n      )\n    );\n    \n    // Trigger auto-save after purchase\n    triggerAutoSave();\n  };\n\n  const spawnFloatingNumber = (x, y, value) => {\n    if (!isMounted.current) return;\n\n    // Add random drift between -30 and 30 pixels\n    const drift = Math.random() * 60 - 30;\n    \n    const id = Math.random().toString(36).substr(2);\n    \n    // Generate random color for floating number\n    const color = Math.random() > 0.5 ? 'gold' : 'white';\n    \n    const newNumber = {\n      id,\n      value,\n      x,\n      y,\n      color,\n      drift,\n    };\n\n    setFloatingNumbers(prev => [...prev, newNumber]);\n\n    // Remove after animation completes\n    setTimeout(() => {\n      if (isMounted.current) {\n        setFloatingNumbers(prev => prev.filter(num => num.id !== newNumber.id));\n      }\n    }, 1000);\n  };\n\n  const triggerAutoSave = () => {\n    setIsSaving(true);\n    saveGame({\n      totalCookies,\n      buildings,\n    });\n    setTimeout(() => {\n      setIsSaving(false);\n    }, 500);\n  };\n\n  useEffect(() => {\n    return () => {\n      isMounted.current = false;\n    };\n  }, []);\n\n  return {\n    score: totalCookies,\n    buildings,\n    buyBuilding,\n    floatingNumbers,\n    spawnFloatingNumber,\n    handleClick,\n    cookiesPerSecond,\n    elapsedSeconds,\n    isPulsing,\n    isSaving\n  };\n}\n"
-        },
-        {
-          "path": "src/index.css",
-          "content": ":root {\n  --primary-blue: #2b8cc9;\n  --text-white: #ffffff;\n  --accent-gold: #f1c40f;\n}\n\n* {\n  margin: 0;\n  padding: 0;\n  box-sizing: border-box;\n}\n\nbody {\n  background: #2c3e50;\n  font-family: 'Arial, sans-serif';\n  margin: 0;\n  padding: 0;\n  min-height: 100vh;\n}\n\n.app-container {\n  display: flex;\n  flex-direction: column;\n  max-width: 800px;\n  margin: 0 auto;\n  padding: 20px;\n  background: #34495e;\n  border-radius: 10px;\n  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);\n}\n\n/* Responsive design adjustments */\n@media (max-width: 768px) {\n  .app-container {\n    padding: 15px;\n    max-width: 100%;\n  }\n  \n  .cookie-button {\n    width: 120px;\n    height: 120px;\n    font-size: 48px;\n  }\n  \n  .game-header {\n    flex-direction: column;\n    text-align: center;\n    gap: 10px;\n  }\n  \n  .game-footer {\n    padding: 15px;\n  }\n}\n\n@media (max-width: 480px) {\n  .app-container {\n    padding: 10px;\n  }\n  \n  .cookie-button {\n    width: 100px;\n    height: 100px;\n    font-size: 36px;\n  }\n  \n  .game-header {\n    padding: 10px;\n  }\n}\n\n.game-header {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  padding: 15px;\n  background: #2980b9;\n  border-radius: 8px;\n  color: white;\n}\n\n.cookie-button {\n  width: 150px;\n  height: 150px;\n  font-size: 60px;\n  cursor: pointer;\n  transition: transform 0.1s ease-in-out;\n  display: flex;\n  justify-content: center;\n  align-items: center;\n  border-radius: 50%;\n  background: #f39c12;\n  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);\n  margin: 20px auto;\n}\n\n/* Active state scaling effect */\n.cookie-button:active {\n  transform: scale(0.95);\n}\n\n/* Focus-visible styles for accessibility */\n.cookie-button:focus-visible,\n.shop-button:focus-visible {\n  outline: 3px solid var(--accent-gold);\n  outline-offset: 2px;\n  border-radius: 50%;\n}\n\n/* Hover transition for shop buttons */\n.shop-button:hover {\n  background-color: #e67e22;\n  transition: background-color 0.2s ease-in-out;\n}\n\n.cookie-image {\n  font-size: 50px;\n  display: flex;\n  justify-content: center;\n  align-items: center;\n}\n\n.floating-number {\n  position: absolute;\n  font-size: 1.5rem;\n  font-weight: bold;\n  color: #ffffff;\n  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);\n  pointer-events: none;\n  user-select: none;\n  will-change: opacity;\n  animation: floatUp 1s ease-out forwards;\n}\n\n@keyframes floatUp {\n  0% {\n    opacity: 1;\n    transform: translateY(0) scale(1);\n  }\n  50% {\n    transform: translateY(-20px) scale(1.1);\n  }\n  100% {\n    opacity: 0;\n    transform: translateY(-40px) scale(1);\n  }\n}\n\n/* Pulse animation for score display */\n@keyframes pulse {\n  0% {\n    transform: scale(1);\n  }\n  50% {\n    transform: scale(1.05);\n  }\n  100% {\n    transform: scale(1);\n  }\n}\n\n.pulse-active {\n  animation: pulse 0.3s ease-in-out;\n}\n\n.game-footer {\n  text-align: center;\n  padding: 20px;\n  background: #95a5a6;\n  border-radius: 8px;\n  color: white;\n}\n"
-        },
-        {
-          "path": "src/main.jsx",
-          "content": "import React from 'react';\nimport ReactDOM from 'react-dom/client';\nimport App from './App.jsx';\n\nconst root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(<App />);\n"
-        },
-        {
-          "path": "src/utils/formatNumber.js",
-          "content": "export function formatNumber(num) {\n  return num.toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, \",\");\n}\n\nexport function formatTime(seconds) {\n  const mins = Math.floor(seconds / 60);\n  const secs = seconds % 60;\n  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;\n}\n"
-        },
-        {
-          "path": "src/utils/storage.js",
-          "content": "export function saveGame(state) {\n  try {\n    const envelope = {\n      version: 1,\n      timestamp: Date.now(),\n      data: state\n    };\n    localStorage.setItem('cookieClickerSave', JSON.stringify(envelope));\n  } catch (error) {\n    console.warn('Failed to save game:', error);\n  }\n}\n\nexport function loadGame() {\n  try {\n    const saved = localStorage.getItem('cookieClickerSave');\n    if (!saved) return { totalCookies: 0, buildings: [] };\n\n    const parsed = JSON.parse(saved);\n    \n    if (parsed.version === 1 && parsed.data) {\n      return parsed.data;\n    }\n    \n    return { totalCookies: 0, buildings: [] };\n  } catch (error) {\n    console.warn('Failed to load game:', error);\n    return { totalCookies: 0, buildings: [] };\n  }\n}\n"
+          "path": "index.html",
+          "content": "<!DOCTYPE html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <link rel=\"icon\" type=\"image/svg+xml\" href=\"/vite.svg\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>React Game Project</title>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n    <script type=\"module\" src=\"/src/main.tsx\"></script>\n  </body>\n</html>\n"
         },
         {
           "path": "package.json",
-          "content": "{\n  \"name\": \"cookie-clicker-game\",\n  \"version\": \"1.0.0\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"build\": \"vite build\",\n    \"preview\": \"vite preview\"\n  },\n  \"dependencies\": {\n    \"react\": \"^18.2.0\",\n    \"react-dom\": \"^18.2.0\"\n  },\n  \"devDependencies\": {\n    \"@vitejs/plugin-react\": \"^4.0.0\",\n    \"tailwindcss\": \"^3.3.0\",\n    \"postcss\": \"^8.4.19\",\n    \"autoprefixer\": \"^10.4.14\",\n    \"vite\": \"^4.5.0\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\"\n}\n"
-        },
-        {
-          "path": "index.html",
-          "content": "<!DOCTYPE html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <link rel=\"icon\" href=\"/favicon.ico\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Cookie Clicker Game</title>\n    <script type=\"module\" src=\"/src/main.jsx\"></script>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n  </body>\n</html>\n"
-        },
-        {
-          "path": "vite.config.js",
-          "content": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({\n  plugins: [react()],\n  resolve: {\n    alias: {\n      '@': '/src',\n    },\n  },\n  server: {\n    port: 5173,\n  },\n});\n"
-        },
-        {
-          "path": "tailwind.config.js",
-          "content": "/** @type {import('tailwindcss').Config} */\nmodule.exports = {\n  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n"
+          "content": "{\n  \"name\": \"react-game-project\",\n  \"private\": true,\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"dev\": \"vite\",\n    \"build\": \"vite build\",\n    \"preview\": \"vite preview\"\n  },\n  \"dependencies\": {\n    \"react\": \"^18.2.0\",\n    \"react-dom\": \"^18.2.0\",\n    \"vite\": \"^4.5.0\",\n    \"@vitejs/plugin-react\": \"^4.0.0\",\n    \"tailwindcss\": \"^3.3.0\",\n    \"postcss\": \"^8.4.0\",\n    \"autoprefixer\": \"^10.4.0\",\n    \"zustand\": \"^4.3.0\",\n    \"lucide-react\": \"^0.300.0\",\n    \"tailwindcss-animate\": \"^1.0.7\"\n  },\n  \"devDependencies\": {\n    \"@types/react\": \"^18.0.0\",\n    \"@types/react-dom\": \"^18.0.0\"\n  }\n}\n"
         },
         {
           "path": "postcss.config.js",
-          "content": "module.exports = {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n};\n"
+          "content": "module.exports = {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  }\n}\n"
+        },
+        {
+          "path": "src/App.tsx",
+          "content": "import React from 'react';\nimport GameArea from './components/GameArea';\nimport ScoreBoard from './components/ScoreBoard';\nimport UpgradeShop from './components/UpgradeShop';\nimport { useGameStore } from '../store/gameStore';\nimport { useGameLoop } from './hooks/useGameLoop';\n\nconst App: React.FC = () => {\n  const { poop, lifetimePoop, clickPower } = useGameStore();\n  useGameLoop();\n\n  return (\n    <div className=\"min-h-screen bg-sewer text-white relative overflow-hidden\">\n      {/* Background texture overlay */}\n      <div \n        className=\"absolute inset-0 opacity-20\"\n        style={{\n          backgroundImage: `url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%235D4037' fill-opacity='0.1' fill-rule='evenodd'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/svg%3E\")`,\n          backgroundSize: '60px 60px'\n        }}\n      />\n      \n      <div className=\"container mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8 h-screen\">\n        {/* Game Area - Left */}\n        <div className=\"lg:col-span-1 flex flex-col items-center justify-center\">\n          <GameArea />\n        </div>\n\n        {/* Center - Score Board */}\n        <div className=\"lg:col-span-1 flex flex-col items-center justify-center\">\n          <ScoreBoard \n            poop={poop} \n            clickPower={clickPower} \n            lifetimePoop={lifetimePoop} \n          />\n        </div>\n\n        {/* Upgrade Shop - Right */}\n        <div className=\"lg:col-span-1 flex flex-col items-center justify-center\">\n          <UpgradeShop />\n        </div>\n      </div>\n    </div>\n  );\n};\n\nexport default App;\n"
+        },
+        {
+          "path": "src/components/FloatingText.tsx",
+          "content": "import React from 'react';\n\ninterface FloatingTextProps {\n  text: string;\n  x: number;\n  y: number;\n}\n\nconst FloatingText: React.FC<FloatingTextProps> = ({ text, x, y }) => {\n  return (\n    <div\n      className=\"absolute pointer-events-none text-2xl font-bold text-gold animate-fall\"\n      style={{\n        left: `${x}px`,\n        top: `${y}px`,\n        transform: 'translateY(-100%) rotate(0deg)',\n        opacity: 0,\n        animation: 'fall 1s ease-out forwards'\n      }}\n    >\n      {text}\n    </div>\n  );\n};\n\nexport default FloatingText;\n"
+        },
+        {
+          "path": "src/components/GameArea.tsx",
+          "content": "import React, { useCallback } from 'react';\nimport { useGameStore } from '../store/gameStore';\nimport FloatingText from './FloatingText';\n\nconst GameArea: React.FC = () => {\n  const { addPoop, clickPower } = useGameStore();\n  const [floatingTexts, setFloatingTexts] = React.useState<{ id: number; text: string; x: number; y: number }[]>([]);\n\n  const handleClick = useCallback((e: React.MouseEvent) => {\n    const rect = e.currentTarget.getBoundingClientRect();\n    const x = e.clientX - rect.left;\n    const y = e.clientY - rect.top;\n\n    // Add floating text\n    const newTextId = Date.now();\n    setFloatingTexts(prev => [...prev, { id: newTextId, text: `+${clickPower}`, x, y }]);\n\n    // Trigger poop addition\n    addPoop(clickPower);\n\n    // Remove text after animation completes\n    setTimeout(() => {\n      setFloatingTexts(prev => prev.filter(text => text.id !== newTextId));\n    }, 1000);\n  }, [addPoop, clickPower]);\n\n  return (\n    <div \n      className=\"relative w-full h-96 md:h-[500px] bg-black/30 border-2 border-gold rounded-lg shadow-2xl overflow-hidden cursor-pointer transform transition hover:scale-105 active:scale-95\"\n      onClick={handleClick}\n    >\n      {/* Toilet Emoji Button */}\n      <div className=\"absolute inset-0 flex items-center justify-center\">\n        <span className=\"text-8xl md:text-9xl select-none animate-pulse\">\ud83d\udebd</span>\n      </div>\n\n      {/* Floating Text Animations */}\n      {floatingTexts.map(text => (\n        <FloatingText \n          key={text.id} \n          text={text.text} \n          x={text.x} \n          y={text.y} \n        />\n      ))}\n    </div>\n  );\n};\n\nexport default GameArea;\n"
+        },
+        {
+          "path": "src/components/ScoreBoard.tsx",
+          "content": "import React from 'react';\nimport { useGameStore } from '../store/gameStore';\n\ninterface ScoreBoardProps {\n  poop: number;\n  clickPower: number;\n  lifetimePoop: number;\n}\n\nconst ScoreBoard: React.FC<ScoreBoardProps> = ({ poop, clickPower, lifetimePoop }) => {\n  return (\n    <div className=\"w-full max-w-md bg-sewer border-2 border-gold rounded-lg p-6 shadow-xl text-center\">\n      {/* Poop Count */}\n      <div className=\"mb-6\">\n        <h2 className=\"text-2xl font-bold text-gold mb-2\">Poop Count</h2>\n        <p className=\"text-5xl font-extrabold text-gold flex items-center justify-center gap-2\">\n          \ud83d\udca9 {poop.toLocaleString()}\n        </p>\n      </div>\n\n      {/* Click Power */}\n      <div className=\"mb-6\">\n        <h3 className=\"text-xl font-semibold text-gold mb-2\">Click Power</h3>\n        <p className=\"text-3xl font-bold text-gold\">{clickPower}</p>\n      </div>\n\n      {/* Lifetime Score */}\n      <div>\n        <h3 className=\"text-xl font-semibold text-gold mb-2\">Lifetime Poop</h3>\n        <p className=\"text-3xl font-bold text-gold\">{lifetimePoop.toLocaleString()}</p>\n      </div>\n    </div>\n  );\n};\n\nexport default ScoreBoard;\n"
+        },
+        {
+          "path": "src/components/UpgradeShop.tsx",
+          "content": "import React from 'react';\nimport { useGameStore } from '../store/gameStore';\n\nconst UpgradeShop: React.FC = () => {\n  const { poop, upgrades, buyUpgrade } = useGameStore();\n\n  return (\n    <div className=\"w-full max-w-md bg-sewer border-2 border-gold rounded-lg p-6 shadow-xl overflow-y-auto h-[500px]\">\n      <h2 className=\"text-3xl font-bold text-gold mb-6 text-center\">Upgrade Shop</h2>\n      \n      <div className=\"space-y-4\">\n        {upgrades.map((upgrade) => (\n          <div \n            key={upgrade.id} \n            className=\"bg-black/40 border border-gold rounded-lg p-4 transition-all duration-200 hover:shadow-lg\"\n          >\n            <h3 className=\"text-xl font-bold text-gold mb-1\">{upgrade.name}</h3>\n            <p className=\"text-sm text-gray-300 mb-2\">{upgrade.description}</p>\n            \n            <div className=\"flex justify-between items-center\">\n              <span className=\"text-lg font-semibold text-gold\">\n                \ud83d\udca9 {upgrade.cost.toLocaleString()}\n              </span>\n              \n              <button\n                onClick={() => buyUpgrade(upgrade.id)}\n                disabled={poop < upgrade.cost || !upgrade.unlocked}\n                className={`px-4 py-2 rounded font-bold text-sm transition-all duration-200 ${\n                  poop >= upgrade.cost && upgrade.unlocked\n                    ? 'bg-gold text-sewer hover:bg-yellow-300 active:scale-95 shadow-lg'\n                    : 'bg-gray-600 text-gray-400 cursor-not-allowed'\n                }`}\n              >\n                {poop >= upgrade.cost && upgrade.unlocked ? 'Buy' : 'Locked'}\n              </button>\n            </div>\n          </div>\n        ))}\n      </div>\n    </div>\n  );\n};\n\nexport default UpgradeShop;\n"
+        },
+        {
+          "path": "src/hooks/useGameLoop.ts",
+          "content": "import { useEffect } from 'react';\nimport { useGameStore } from '../store/gameStore';\n\nexport const useGameLoop = () => {\n  const { addPoop, autoRate } = useGameStore();\n\n  useEffect(() => {\n    const intervalId = setInterval(() => {\n      if (autoRate > 0) {\n        addPoop(autoRate);\n      }\n    }, 1000);\n\n    return () => clearInterval(intervalId);\n  }, [autoRate, addPoop]);\n};\n"
+        },
+        {
+          "path": "src/index.css",
+          "content": "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n/* Global Reset */\n* {\n  margin: 0;\n  padding: 0;\n  box-sizing: border-box;\n}\n\nbody {\n  font-family: 'Inter', sans-serif;\n  background-color: #1a1a1a;\n  color: #f5f5f5;\n  line-height: 1.6;\n}\n\n/* Custom Animations */\n@keyframes fall {\n  from {\n    transform: translateY(-100vh);\n    opacity: 0;\n  }\n  to {\n    transform: translateY(100vh);\n    opacity: 0;\n  }\n}\n\n@keyframes shake {\n  0%, 100% { transform: translateX(0); }\n  25% { transform: translateX(-5px); }\n  75% { transform: translateX(5px); }\n}\n"
+        },
+        {
+          "path": "src/main.jsx",
+          "content": "import React from 'react';\nimport ReactDOM from 'react-dom/client';\nimport App from './App.jsx';\n\nconst root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n);\n"
+        },
+        {
+          "path": "src/store/gameStore.ts",
+          "content": "import { create } from 'zustand';\nimport { persist } from 'zustand/middleware';\nimport { upgrades as upgradeDefinitions } from '../data/upgrades';\n\ninterface Upgrade {\n  id: string;\n  name: string;\n  description: string;\n  cost: number;\n  unlocked: boolean;\n}\n\ninterface GameState {\n  poop: number;\n  lifetimePoop: number;\n  clickPower: number;\n  autoRate: number;\n  unlockedUpgrades: string[];\n}\n\ntype GameActions = {\n  addPoop: (amount: number) => void;\n  buyUpgrade: (id: string) => void;\n};\n\nexport const useGameStore = create<GameState & GameActions>()(\n  persist(\n    (set, get) => ({\n      poop: 0,\n      lifetimePoop: 0,\n      clickPower: 1,\n      autoRate: 0,\n      unlockedUpgrades: [],\n      addPoop: (amount) =>\n        set((state) => {\n          const newPoop = state.poop + amount;\n          const newLifetimePoop = state.lifetimePoop + amount;\n          return { poop: newPoop, lifetimePoop: newLifetimePoop };\n        }),\n      buyUpgrade: (id) => {\n        const { unlockedUpgrades, poop } = get();\n        const upgradeDef = upgradeDefinitions.find((u) => u.id === id);\n        \n        if (!upgradeDef || !upgradeDef.unlocked || poop < upgradeDef.cost) return;\n        \n        const updatedUnlockedUpgrades = [...unlockedUpgrades, id];\n        \n        set({\n          poop: poop - upgradeDef.cost,\n          unlockedUpgrades: updatedUnlockedUpgrades,\n        });\n        \n        // Execute the effect\n        const upgrade = upgradeDefinitions.find((u) => u.id === id);\n        if (upgrade && upgrade.effect) {\n          upgrade.effect(get());\n        }\n      },\n    }),\n    {\n      name: 'attack-on-toilet-save',\n      partialize: (state) => ({\n        poop: state.poop,\n        lifetimePoop: state.lifetimePoop,\n        clickPower: state.clickPower,\n        autoRate: state.autoRate,\n        unlockedUpgrades: state.unlockedUpgrades,\n      }),\n    }\n  )\n);\n"
+        },
+        {
+          "path": "src/types/game.ts",
+          "content": "export interface Upgrade {\n  id: string;\n  name: string;\n  description: string;\n  cost: number;\n  effect: (state: GameState) => void;\n  unlocked: boolean;\n}\n\nexport interface GameState {\n  poop: number;\n  lifetimePoop: number;\n  clickPower: number;\n  autoRate: number;\n  upgrades: Upgrade[];\n}\n"
+        },
+        {
+          "path": "tailwind.config.js",
+          "content": "/** @type {import('tailwindcss').Config} */\nmodule.exports = {\n  content: [\n    \"./index.html\",\n    \"./src/**/*.{js,jsx,ts,tsx}\",\n  ],\n  theme: {\n    extend: {\n      colors: {\n        sewer: '#5D4037',\n        gold: '#FFD700',\n        'blood-red': '#8B0000',\n      },\n      animation: {\n        fall: 'fall 1s ease-out forwards',\n        shake: 'shake 0.5s ease-in-out'\n      },\n      keyframes: {\n        fall: {\n          '0%': { transform: 'translateY(-100%) rotate(0deg)', opacity: 0 },\n          '50%': { opacity: 1 },\n          '100%': { transform: 'translateY(100vh) rotate(360deg)', opacity: 0 }\n        },\n        shake: {\n          '0%, 100%': { transform: 'translateX(0)' },\n          '25%': { transform: 'translateX(-5px)' },\n          '75%': { transform: 'translateX(5px)' }\n        }\n      }\n    },\n  },\n  plugins: [require('tailwindcss-animate')],\n};\n"
+        },
+        {
+          "path": "vite.config.js",
+          "content": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({\n  plugins: [react()],\n  resolve: {\n    alias: {\n      '@': '/src',\n    },\n  },\n});\n"
         }
       ],
-      "_researchDocs": "\n## Project API Surface\nMatch these import/export signatures exactly when importing from project files.\n## src/App.jsx\nexport default App;\n\n## src/components/CookieButton.jsx\nexport default CookieButton;\n\n## src/components/FloatingNumber.jsx\nexport default FloatingNumber;\n\n## src/components/GameFooter.jsx\nexport default GameFooter;\n\n## src/components/GameHeader.jsx\nexport default GameHeader;\n\n## src/hooks/useGameLogic.js\nexport function useGameLogic() {...}\n\n## src/utils/formatNumber.js\nexport function formatNumber(num) {...}\nexport function formatTime(seconds) {...}\n\n## src/utils/storage.js\nexport function saveGame(state) {...}\nexport function loadGame() {...}",
+      "_researchDocs": "## Dependency Manifest\nOnly use packages listed here.\ndependencies:\n  react: ^18.2.0\n  react-dom: ^18.2.0\n  vite: ^4.5.0\n  @vitejs/plugin-react: ^4.0.0\n  tailwindcss: ^3.3.0\n  postcss: ^8.4.0\n  autoprefixer: ^10.4.0\n  zustand: ^4.3.0\n  lucide-react: ^0.300.0\n  tailwindcss-animate: ^1.0.7\ndevDependencies:\n  @types/react: ^18.0.0\n  @types/react-dom: ^18.0.0\n\n## Project API Surface\nMatch these import/export signatures exactly when importing from project files.\n## src/App.tsx\nexport default App;\n\n## src/components/FloatingText.tsx\nexport default FloatingText;\n\n## src/components/GameArea.tsx\nexport default GameArea;\n\n## src/components/ScoreBoard.tsx\nexport default ScoreBoard;\n\n## src/components/UpgradeShop.tsx\nexport default UpgradeShop;\n\n## src/hooks/useGameLoop.ts\nexport const useGameLoop = () => ...\n\n## src/store/gameStore.ts\nexport const useGameStore = create<GameState & GameActions>()(\n\n## src/types/game.ts\nexport interface Upgrade {...}\nexport interface GameState {...}\n\n## vite.config.js\nexport default defineConfig({...}",
       "_projectFileList": [
-        "src/App.jsx",
-        "src/components/CookieButton.jsx",
-        "src/components/FloatingNumber.jsx",
-        "src/components/GameFooter.jsx",
-        "src/components/GameHeader.jsx",
-        "src/hooks/useGameLogic.js",
+        "index.html",
+        "package.json",
+        "postcss.config.js",
+        "src/App.tsx",
+        "src/components/FloatingText.tsx",
+        "src/components/GameArea.tsx",
+        "src/components/ScoreBoard.tsx",
+        "src/components/UpgradeShop.tsx",
+        "src/hooks/useGameLoop.ts",
         "src/index.css",
         "src/main.jsx",
-        "src/utils/formatNumber.js",
-        "src/utils/storage.js"
+        "src/store/gameStore.ts",
+        "src/types/game.ts",
+        "tailwind.config.js",
+        "vite.config.js"
       ],
-      "_projectApiSummary": "## src/App.jsx\nexport default App;\n## src/components/CookieButton.jsx\nexport default CookieButton;\n## src/components/FloatingNumber.jsx\nexport default FloatingNumber;\n## src/components/GameFooter.jsx\nexport default GameFooter;\n## src/components/GameHeader.jsx\nexport default GameHeader;\n## src/hooks/useGameLogic.js\nexport function useGameLogic() {...}\n## src/utils/formatNumber.js\nexport function formatNumber(num) {...}\nexport function formatTime(seconds) {...}\n## src/utils/storage.js\nexport function saveGame(state) {...}\nexport function loadGame() {...}",
-      "_projectDeps": [],
+      "_projectApiSummary": "## src/App.tsx\nexport default App;\n## src/components/FloatingText.tsx\nexport default FloatingText;\n## src/components/GameArea.tsx\nexport default GameArea;\n## src/components/ScoreBoard.tsx\nexport default ScoreBoard;\n## src/components/UpgradeShop.tsx\nexport default UpgradeShop;\n## src/hooks/useGameLoop.ts\nexport const useGameLoop = () => ...\n## src/store/gameStore.ts\nexport const useGameStore = create<GameState & GameActions>()(\n## src/types/game.ts\nexport interface Upgrade {...}\nexport interface GameState {...}\n## vite.config.js\nexport default defineConfig({...}",
+      "_projectDeps": [
+        "react",
+        "react-dom",
+        "vite",
+        "@vitejs/plugin-react",
+        "tailwindcss",
+        "postcss",
+        "autoprefixer",
+        "zustand",
+        "lucide-react",
+        "tailwindcss-animate",
+        "@types/react",
+        "@types/react-dom"
+      ],
       "p2Results": [
         {
           "task_id": "TASK-001",
           "files_written": [
             "package.json",
-            "index.html",
             "vite.config.js",
             "tailwind.config.js",
-            "postcss.config.js"
+            "postcss.config.js",
+            "index.html",
+            "src/main.jsx",
+            "src/index.css"
           ]
         },
         {
           "task_id": "TASK-002",
           "files_written": [
-            "src/index.css",
-            "src/components/FloatingNumber.jsx",
-            "src/hooks/useGameLogic.js",
-            "src/main.jsx"
+            "src/store/gameStore.ts",
+            "src/hooks/useGameLoop.ts",
+            "src/types/game.ts"
+          ]
+        },
+        {
+          "task_id": "TASK-003",
+          "files_written": [
+            "src/App.tsx",
+            "src/components/GameArea.tsx",
+            "src/components/ScoreBoard.tsx",
+            "src/components/UpgradeShop.tsx",
+            "src/components/FloatingText.tsx"
           ]
         }
       ],
       "allTasks": [
         {
           "task_id": "TASK-001",
-          "description": "Create all missing project configuration files to make the project buildable. This is a React + Vite + Tailwind CSS project.\n\n1. Create package.json with ALL required dependencies:\n   - react and react-dom (latest versions)\n   - vite as dev server and bundler\n   - tailwindcss and postcss for styling\n   - autoprefixer as PostCSS plugin\n   - Scripts: \"dev\" runs vite, \"build\" runs vite build, \"preview\" serves the built app\n\n2. Create index.html in project root:\n   - Standard HTML5 template with title \"Cookie Clicker Game\"\n   - Include <div id=\"root\"></div> as React mount point\n   - Add <script type=\"module\" src=\"/src/main.jsx\"></script>\n\n3. Create vite.config.js:\n   - Use @vitejs/plugin-react\n   - Configure resolve alias for '@' to 'src'\n   - Set server port to 5173\n\n4. Create tailwind.config.js:\n   - Content array: ['./index.html', './src/**/*.{js,ts,jsx,tsx}']\n   - Theme with default configuration\n   - Plugins: [] (empty)\n\n5. Create postcss.config.js:\n   - plugins: { tailwindcss: {}, autoprefixer: {} }\n\n6. Create tsconfig.json (optional but recommended for type safety):\n   - compilerOptions with jsx: \"react-jsx\", target: \"ESNext\", module: \"ESNext\"\n   - include: [\"src\"]\n\nEnsure all configuration files are compatible and the project will compile successfully after Task 002 completes.",
+          "description": "Initialize the React project infrastructure with Vite and Tailwind CSS. Create all necessary configuration files to ensure the project builds out of the box. Include dependencies for state management (Zustand) and icons (Lucide React). \n\nRequirements:\n1. package.json: Include 'react', 'react-dom', 'vite', '@vitejs/plugin-react', 'tailwindcss', 'postcss', 'autoprefixer', 'zustand' (for game state), and 'lucide-react' (for UI icons).\n2. vite.config.js: Configure path aliases (@) for easier imports.\n3. tailwind.config.js: Set up custom theme colors inspired by the reference image (e.g., 'sewer': '#5D4037', 'gold': '#FFD700', 'blood-red': '#8B0000'). Add custom animations for 'fall' and 'shake'.\n4. index.html: Standard Vite template.\n5. src/main.jsx: React entry point with ReactDOM.createRoot.\n6. src/index.css: Tailwind directives (@tailwind base, components, utilities) and some global reset styles.",
           "files": [
             "package.json",
-            "index.html",
             "vite.config.js",
             "tailwind.config.js",
-            "postcss.config.js"
+            "postcss.config.js",
+            "index.html",
+            "src/main.jsx",
+            "src/index.css"
           ],
           "dependencies": [],
-          "complexity": "medium"
+          "complexity": "low"
         },
         {
           "task_id": "TASK-002",
-          "description": "Modify existing source files to fix the floating number animation and add drift functionality.\n\n1. Modify src/index.css:\n   - Add CSS keyframes for floating-number animation named 'floatUp' that:\n     * 0%: opacity 1, transform translateY(0) scale(1)\n     * 50%: transform translateY(-20px) scale(1.1)\n     * 100%: opacity 0, transform translateY(-40px) scale(1)\n   - Add .floating-number class with:\n     * position: absolute\n     * font-size: 1.5rem\n     * font-weight: bold\n     * color: #ffffff\n     * text-shadow: 2px 2px 4px rgba(0,0,0,0.3)\n     * pointer-events: none\n     * user-select: none\n     * will-change: transform, opacity (for performance optimization)\n     * animation: floatUp 1s ease-out forwards\n   - Add @keyframes floatUp with the values above\n\n2. Modify src/components/FloatingNumber.jsx:\n   - Replace all inline styles with CSS class 'floating-number'\n   - Accept props: number, x, y, drift (new prop for horizontal offset)\n   - Apply transform using style={{ left: `${x}px`, top: `${y}px`, transform: `translateX(${drift}px)` }}\n   - Use useRef for isMounted to track component mount state\n   - Add useEffect cleanup that sets isMounted.current = false on unmount\n   - The component should render the number inside a span with class 'floating-number'\n\n3. Modify src/hooks/useGameLogic.js:\n   - Update spawnFloatingNumber function to:\n     * Accept buttonElement as parameter (the cookie button DOM element)\n     * Calculate x/y coordinates relative to buttonElement.offsetParent or use getBoundingClientRect() for the container\n     * Add random drift value between -30 and 30 pixels: Math.random() * 60 - 30\n     * Pass { number, x, y, drift } object instead of just { number, x, y }\n   - Update setFloatingNumbers call to check isMounted before calling:\n     * Use the isMounted ref from FloatingNumber component or add state management here\n     * Only update if component is still mounted (check a mounted flag)\n   - Ensure floating numbers spawn centered on the cookie button container even when page scrolls\n\n4. Verify src/main.jsx exists and properly renders App component with ReactDOM.createRoot\n\nThe goal: Numbers should appear correctly positioned over the cookie button regardless of scroll position, with random horizontal drift for visual variety.",
+          "description": "Implement the core game engine and state management using Zustand. This task handles the 'brain' of the clicker game.\n\nRequirements:\n1. src/store/gameStore.ts: Create a persistent store with `create` from zustand. Include `persist` middleware to save/load data automatically to localStorage under key 'attack-on-toilet-save'.\n2. State Schema: \n   - `poop`: number (current currency)\n   - `lifetimePoop`: number (total earned)\n   - `clickPower`: number (poop per click)\n   - `autoRate`: number (poop per second from idle units)\n   - `upgrades`: object or array tracking purchased upgrades.\n3. Actions: \n   - `addPoop(amount)`: Increases score, triggers save.\n   - `buyUpgrade(id)`: Checks cost, deducts poop, increases stats, unlocks visuals.\n4. Game Loop: Implement a standard useEffect-based interval (1 tick per second or 100ms) in a separate hook to handle passive resource generation (`autoRate`).\n5. src/types/game.ts: Define TypeScript interfaces for Upgrade objects.",
           "files": [
-            "src/index.css",
-            "src/components/FloatingNumber.jsx",
-            "src/hooks/useGameLogic.js",
-            "src/main.jsx"
+            "src/store/gameStore.ts",
+            "src/hooks/useGameLoop.ts",
+            "src/types/game.ts"
           ],
           "dependencies": [
             "TASK-001"
+          ],
+          "complexity": "medium"
+        },
+        {
+          "task_id": "TASK-003",
+          "description": "Build the visual interface components for 'Attack on Toilet'. The design should be dark, gritty (using browns and golds), matching the reference image style.\n\nRequirements:\n1. src/App.tsx: Main layout wrapper with a responsive grid (Game Area Left/Center, Upgrade Shop Right). Background texture/color matching a sewer/dungeon vibe.\n2. src/components/GameArea.tsx: The main click zone. \n   - Feature a large Toilet Emoji \ud83d\udebd as the button.\n   - On click: Trigger `addPoop` from store and spawn a floating 'floating text' animation (+X poop) at the cursor position.\n3. src/components/ScoreBoard.tsx: Display current Poop count (\ud83d\udca9 icon), Click Power, and Lifetime Score. Use large, bold fonts with gold borders.\n4. src/components/UpgradeShop.tsx: A scrollable list of upgrades.\n   - Upgrade Cards should show the upgrade name (e.g., 'Better Plunger', 'Sewer Rat'), cost in poop, and benefit description.\n   - Buttons must be disabled if user cannot afford them.\n5. Implement CSS animations for the 'falling' effect mentioned in requirements: When clicking, a small \ud83d\udca9 emoji should briefly appear and fall downwards before fading out.",
+          "files": [
+            "src/App.tsx",
+            "src/components/GameArea.tsx",
+            "src/components/ScoreBoard.tsx",
+            "src/components/UpgradeShop.tsx",
+            "src/components/FloatingText.tsx"
+          ],
+          "dependencies": [
+            "TASK-002"
           ],
           "complexity": "high"
         }
@@ -2008,52 +2053,49 @@
         "cross_file_consistent": false,
         "fixes_needed": [
           {
-            "file": "src/hooks/useGameLogic.js",
+            "file": "package.json",
             "severity": "critical",
-            "issue": "Function signature mismatch for `spawnFloatingNumber`. The hook expects a DOM element (`buttonElement`) to calculate position via `.getBoundingClientRect()`, but `App.jsx` passes raw coordinates `(x, y)`. This causes a runtime crash (TypeError: buttonElement.getBoundingClientRect is not a function).",
-            "fix_instruction": "Update the `spawnFloatingNumber` function signature to accept `(x, y, value)` instead of `(buttonElement, value)`. Remove the `.getBoundingClientRect()` logic and use the provided `x` and `y` coordinates directly for positioning.",
+            "issue": "Missing dependency 'tailwindcss-animate' required by tailwind.config.js. This will cause the build to fail.",
+            "fix_instruction": "Add \"tailwindcss-animate\": \"^1.0.7\" to the dependencies section in package.json.",
             "related_files": [
-              "src/App.jsx",
-              "src/components/CookieButton.jsx"
+              "tailwind.config.js"
             ]
           },
           {
-            "file": "src/components/FloatingNumber.jsx",
+            "file": "src/App.tsx",
+            "severity": "critical",
+            "issue": "The idle game loop hook (useGameLoop) is defined but never imported or used. The auto-generate mechanic will not function.",
+            "fix_instruction": "Import useGameLoop from './hooks/useGameLoop' and call it at the top of the App component: const { useGameLoop } = require('./hooks/useGameLoop'); useGameLoop();",
+            "related_files": [
+              "src/hooks/useGameLoop.ts"
+            ]
+          },
+          {
+            "file": "src/store/gameStore.ts",
+            "severity": "critical",
+            "issue": "Upgrade objects contain functions ('effect') which are stripped during localStorage persistence. On reload, 'upgrade.effect' will be undefined, causing a crash when buying upgrades.",
+            "fix_instruction": "Move the upgrade definitions to a constant outside the store (e.g., in src/data/upgrades.ts). In gameStore.ts, persist only the list of unlocked upgrade IDs or names, and reconstruct the full upgrade objects with functions on every access using the constant definition.",
+            "related_files": [
+              "src/components/UpgradeShop.tsx"
+            ]
+          },
+          {
+            "file": "index.html",
             "severity": "high",
-            "issue": "Prop mismatch with parent component `App.jsx`. The component expects props `{ number, x, y, drift }` but receives `{ value, x, y, color }`. Additionally, the inline style `transform` overrides the CSS keyframe animation, breaking the float-up effect.",
-            "fix_instruction": "Rename prop `number` to `value`. Add `drift` and `color` props. Remove the inline `transform` property from the style object to prevent conflict with CSS animations. Instead, use a wrapper div for positioning (`left`, `top`) and apply drift via `margin-left` or CSS variables on the inner text element.",
+            "issue": "Entry point mismatch. index.html references 'main.jsx' but the project uses TypeScript ('App.tsx', 'gameStore.ts'). This should be consistent.",
+            "fix_instruction": "Rename src/main.jsx to src/main.tsx and update the script src in index.html to '/src/main.tsx'. Ensure imports in main.tsx do not specify extensions (e.g., import App from './App' instead of './App.jsx').",
             "related_files": [
-              "src/App.jsx",
-              "src/index.css"
-            ]
-          },
-          {
-            "file": "src/App.jsx",
-            "severity": "high",
-            "issue": "Incorrect props passed to `FloatingNumber` component. It passes `value={number.value}` but the component expects `number`. It also fails to pass the `drift` property which is present in the state object.",
-            "fix_instruction": "Update the `floatingNumbers.map` rendering logic to pass `value={number.value}`, `drift={number.drift}`, and `color={number.color}` to match the corrected `FloatingNumber` component props.",
-            "related_files": [
-              "src/components/FloatingNumber.jsx",
-              "src/hooks/useGameLogic.js"
-            ]
-          },
-          {
-            "file": "src/index.css",
-            "severity": "medium",
-            "issue": "CSS animation conflict. The `.floating-number` class uses `transform` in keyframes, which conflicts with inline styles used for drift positioning.",
-            "fix_instruction": "Update the `.floating-number` rule to ensure it does not rely solely on `transform` if dynamic offsets are needed via wrapper elements. Ensure the animation targets a child element or use CSS variables (`--drift`) that do not override the keyframe transform property.",
-            "related_files": [
-              "src/components/FloatingNumber.jsx"
+              "src/main.jsx"
             ]
           }
         ],
-        "summary": "The project structure is mostly complete with correct Vite/Tailwind setup, but there are critical runtime errors preventing the game from functioning. The primary issue is a signature mismatch between `useGameLogic` and `App.jsx` regarding floating number spawning, which will crash the app on click. Additionally, prop mismatches in `FloatingNumber` prevent visual feedback from rendering correctly, and CSS conflicts break animations. Fixing these cross-file interface contracts is required before the game is playable."
+        "summary": "The project has a solid foundation with Vite, Tailwind, and Zustand configured correctly for the most part. However, there are critical blockers preventing it from running or functioning as intended: a missing dependency will break the build, the core idle mechanic is disconnected from the UI, and state persistence logic will crash on reload due to function serialization issues. Additionally, entry point file extensions are inconsistent with the TypeScript usage in the rest of the codebase."
       },
       "_fixResults": [
-        "src/hooks/useGameLogic.js",
-        "src/components/FloatingNumber.jsx",
-        "src/App.jsx",
-        "src/index.css"
+        "package.json",
+        "src/App.tsx",
+        "src/store/gameStore.ts",
+        "index.html"
       ],
       "5b33e465-8f00-4649-bdb2-c98931982f3d": {
         "project_id": "5b33e465-8f00-4649-bdb2-c98931982f3d",
@@ -2090,8 +2132,8 @@
       "_scrapeData": null,
       "_plannerInstanceId": null,
       "_coderInstanceId": null,
-      "_currentProjectId": "idle-clicker",
-      "_currentTaskId": "TASK-002",
+      "_currentProjectId": "attack-on-toilet",
+      "_currentTaskId": "TASK-003",
       "test-loop2": {
         "project_id": "test-loop2",
         "goal": "Build a simple hello world Next.js page with a heading",
@@ -2102,23 +2144,24 @@
         "created_at": "2026-03-18T16:25:07.978Z",
         "last_updated": "2026-03-18T16:25:07.978Z"
       },
-      "_queueTotal": 2,
-      "_queueDone": 2,
+      "_queueTotal": 3,
+      "_queueDone": 3,
       "_currentTask": {
-        "task_id": "TASK-002",
-        "description": "Modify existing source files to fix the floating number animation and add drift functionality.\n\n1. Modify src/index.css:\n   - Add CSS keyframes for floating-number animation named 'floatUp' that:\n     * 0%: opacity 1, transform translateY(0) scale(1)\n     * 50%: transform translateY(-20px) scale(1.1)\n     * 100%: opacity 0, transform translateY(-40px) scale(1)\n   - Add .floating-number class with:\n     * position: absolute\n     * font-size: 1.5rem\n     * font-weight: bold\n     * color: #ffffff\n     * text-shadow: 2px 2px 4px rgba(0,0,0,0.3)\n     * pointer-events: none\n     * user-select: none\n     * will-change: transform, opacity (for performance optimization)\n     * animation: floatUp 1s ease-out forwards\n   - Add @keyframes floatUp with the values above\n\n2. Modify src/components/FloatingNumber.jsx:\n   - Replace all inline styles with CSS class 'floating-number'\n   - Accept props: number, x, y, drift (new prop for horizontal offset)\n   - Apply transform using style={{ left: `${x}px`, top: `${y}px`, transform: `translateX(${drift}px)` }}\n   - Use useRef for isMounted to track component mount state\n   - Add useEffect cleanup that sets isMounted.current = false on unmount\n   - The component should render the number inside a span with class 'floating-number'\n\n3. Modify src/hooks/useGameLogic.js:\n   - Update spawnFloatingNumber function to:\n     * Accept buttonElement as parameter (the cookie button DOM element)\n     * Calculate x/y coordinates relative to buttonElement.offsetParent or use getBoundingClientRect() for the container\n     * Add random drift value between -30 and 30 pixels: Math.random() * 60 - 30\n     * Pass { number, x, y, drift } object instead of just { number, x, y }\n   - Update setFloatingNumbers call to check isMounted before calling:\n     * Use the isMounted ref from FloatingNumber component or add state management here\n     * Only update if component is still mounted (check a mounted flag)\n   - Ensure floating numbers spawn centered on the cookie button container even when page scrolls\n\n4. Verify src/main.jsx exists and properly renders App component with ReactDOM.createRoot\n\nThe goal: Numbers should appear correctly positioned over the cookie button regardless of scroll position, with random horizontal drift for visual variety.",
+        "task_id": "TASK-003",
+        "description": "Build the visual interface components for 'Attack on Toilet'. The design should be dark, gritty (using browns and golds), matching the reference image style.\n\nRequirements:\n1. src/App.tsx: Main layout wrapper with a responsive grid (Game Area Left/Center, Upgrade Shop Right). Background texture/color matching a sewer/dungeon vibe.\n2. src/components/GameArea.tsx: The main click zone. \n   - Feature a large Toilet Emoji \ud83d\udebd as the button.\n   - On click: Trigger `addPoop` from store and spawn a floating 'floating text' animation (+X poop) at the cursor position.\n3. src/components/ScoreBoard.tsx: Display current Poop count (\ud83d\udca9 icon), Click Power, and Lifetime Score. Use large, bold fonts with gold borders.\n4. src/components/UpgradeShop.tsx: A scrollable list of upgrades.\n   - Upgrade Cards should show the upgrade name (e.g., 'Better Plunger', 'Sewer Rat'), cost in poop, and benefit description.\n   - Buttons must be disabled if user cannot afford them.\n5. Implement CSS animations for the 'falling' effect mentioned in requirements: When clicking, a small \ud83d\udca9 emoji should briefly appear and fall downwards before fading out.",
         "files": [
-          "src/index.css",
-          "src/components/FloatingNumber.jsx",
-          "src/hooks/useGameLogic.js",
-          "src/main.jsx"
+          "src/App.tsx",
+          "src/components/GameArea.tsx",
+          "src/components/ScoreBoard.tsx",
+          "src/components/UpgradeShop.tsx",
+          "src/components/FloatingText.tsx"
         ],
         "dependencies": [
-          "TASK-001"
+          "TASK-002"
         ],
         "complexity": "high"
       },
-      "_currentProjectGoal": "Create an \"idle clicker game\" similar to cookie clicker. You can choose the design and theme. Be as creative as you like. Use the reference photo as inspiration.",
+      "_currentProjectGoal": "Build a react \"clicker game\" with localStorage for saving game progress. We are going to call this game \"Attack on Toilet\". The goal of this game above all else is to be fun and keep the user coming back to play it. It should have idle elements that allow the user to upgrade their clicking ability to gain more resources (in this case poop). The animation needs to be poop like characters falling into a toilet on each click. There should be a lot of elements that are fun to look at and have exciting visual feedback when clicking. Include package.json with all dependencies, index.html, vite.config.js, and tailwind config so the project builds out of the box. Use emoji-based graphics for the poop and toilet assets. I am going to provide some photos to use as asset references. Let me know if you need anything else, feel free to ask questions.",
       "_currentQueue": [],
       "_reviewerInstanceId": null,
       "avalon-landing": {
@@ -2212,44 +2255,106 @@
         ],
         "pending_tasks": [],
         "files": [
+          "src/index.css",
+          "src/App.jsx",
+          "src/components/GameHeader.jsx",
+          "src/components/CookieButton.jsx",
+          "src/components/FloatingNumber.jsx",
+          "src/components/GameFooter.jsx"
+        ],
+        "created_at": "2026-03-18T18:39:08.933Z",
+        "last_updated": "2026-03-18T20:28:08.854Z"
+      },
+      "_finalReview": {
+        "final_quality": 55,
+        "summary": "The project structure is solid with Zustand for state management and Vite/Tailwind setup, but it contains critical runtime blockers preventing execution. The missing upgrades data file and mismatched store/component props will cause immediate crashes upon build.",
+        "suggestions": [
+          {
+            "preview": "Fix critical build errors by creating missing upgrade definitions and aligning store state with component expectations.",
+            "detail": "Create a new file at src/data/upgrades.ts exporting an array of Upgrade objects including id, name, cost, type (click/auto), amount, and description. Update src/store/gameStore.ts to import this data and add a computed selector or derived property named upgrades that filters the definitions based on unlockedUpgrades state so UpgradeShop receives valid data. Rename src/main.jsx to src/main.tsx and update its imports to use .tsx extensions for consistency with App.tsx. Ensure package.json includes typescript and @types/react in devDependencies since the project uses TypeScript files but currently lacks them in dependencies, preventing type checking."
+          },
+          {
+            "preview": "Implement dynamic poop particle animations to replace static text feedback and fulfill core visual requirements.",
+            "detail": "Refactor src/components/FloatingText.tsx into a generic Particle component that accepts an emoji prop (defaulting to \ud83d\udca9) and randomizes horizontal velocity. In src/components/GameArea.tsx, modify the handleClick function to spawn 2-3 Particle instances per click with randomized x/y offsets around the cursor position instead of just one text element. Add new CSS keyframes in src/index.css named 'poop-fall' that simulate gravity (ease-in-out) and rotation for the emoji particles falling into the toilet area. Ensure the GameArea container has overflow-visible or handles z-index correctly so particles don't clip when spawning near edges."
+          },
+          {
+            "preview": "Update configuration files for ESM compatibility and correct project metadata to ensure proper branding.",
+            "detail": "Modify tailwind.config.js to use export default instead of module.exports since package.json specifies type: module, preventing potential Vite resolution errors. Update index.html title tag from 'React Game Project' to 'Attack on Toilet' to match the game identity. Add a Reset Progress button in src/components/ScoreBoard.tsx that clears localStorage and resets Zustand store state for debugging or fresh starts. Ensure all color references like bg-sewer use valid Tailwind utility classes defined in tailwind.config.js theme extend section."
+          }
+        ]
+      },
+      "test-webhook": {
+        "project_id": "test-webhook",
+        "goal": "test",
+        "status": "active",
+        "completed_tasks": [],
+        "pending_tasks": [],
+        "files": [],
+        "created_at": "2026-03-18T22:14:12.561Z",
+        "last_updated": "2026-03-18T22:14:12.561Z"
+      },
+      "_pendingPlan": {
+        "tasks": [
+          {
+            "task_id": "TASK-001",
+            "description": "Update project configuration for TypeScript support and rename entry point file.\n\n1. Update package.json: Ensure 'typescript' is added to devDependencies alongside existing @types/react and @types/react-dom. The project uses .tsx files but needs proper TypeScript tooling configured.\n\n2. Rename src/main.jsx to src/main.tsx: Delete the old main.jsx and create new main.tsx with identical functionality but using TypeScript imports/exports style.\n\n3. Update vite.config.js: Ensure it properly handles .ts/.tsx file extensions in react plugin configuration (it should already be configured, just verify).\n\n4. The main.tsx entry point must:\n   - Import ReactDOM from 'react-dom/client'\n   - Import App component from './App' with correct path\n   - Use createRoot to render the app into '#root' element\n   - Use TypeScript-compatible import statements (.tsx extension for React components)\n\nThis task is foundational - all other tasks depend on proper TypeScript configuration.",
+            "files": [
+              "package.json",
+              "src/main.tsx",
+              "vite.config.js"
+            ],
+            "dependencies": [],
+            "complexity": "low"
+          },
+          {
+            "task_id": "TASK-002",
+            "description": "Create upgrade data layer and update game store with computed selector.\n\n1. Create src/data/upgrades.ts:\n   - Export a constant array named 'UPGRADE_DEFINITIONS' of type Upgrade[]\n   - Include at least 8-10 upgrade objects covering both 'click' and 'auto' types\n   - Each upgrade must have: id (string), name (string), cost (number), type ('click' | 'auto'), amount (number), description (string)\n   - Click upgrades increase click power, auto upgrades add automatic production per second\n   - Sample names: 'Basic Click', 'Double Tap', 'Auto Miner', 'Power Drill', 'Mega Click', 'Auto Factory', 'Quantum Clicker', 'Super Automator'\n   - Costs should range from 10 to 5000, amounts should scale appropriately (click: 2-100x multiplier or add value, auto: 1-50 per second)\n\n2. Update src/store/gameStore.ts:\n   - Import UPGRADE_DEFINITIONS from '../data/upgrades'\n   - Add a computed property/selector named 'upgrades' that filters UPGRADE_DEFINITIONS based on unlockedUpgrades state\n   - The filter should return only upgrades where upgrade.id exists in the unlockedUpgrades Set\n   - Use Zustand's getter syntax: upgrades: () => store.getState().unlockedUpgrades.size > 0 ? ... or use derived pattern\n   - Ensure the UpgradeShop component can access valid filtered upgrade data through this selector\n   - The computed property should return type: Upgrade[]\n\n3. Verify src/types/game.ts already has the Upgrade interface with correct fields (id, name, cost, type, amount, description). Do not modify unless necessary for compatibility.\n\nThis task creates the core upgrade system that powers the UpgradeShop component.",
+            "files": [
+              "src/data/upgrades.ts",
+              "src/store/gameStore.ts"
+            ],
+            "dependencies": [
+              "TASK-001"
+            ],
+            "complexity": "medium"
+          }
+        ],
+        "plan_document": ""
+      },
+      "attack-on-toilet": {
+        "status": "completed",
+        "completed_tasks": [
+          "TASK-001",
+          "TASK-002",
+          "TASK-003"
+        ],
+        "files": [
           "package.json",
-          "index.html",
           "vite.config.js",
           "tailwind.config.js",
           "postcss.config.js",
+          "index.html",
+          "src/main.jsx",
           "src/index.css",
-          "src/components/FloatingNumber.jsx",
-          "src/hooks/useGameLogic.js",
-          "src/main.jsx"
+          "src/store/gameStore.ts",
+          "src/hooks/useGameLoop.ts",
+          "src/types/game.ts",
+          "src/App.tsx",
+          "src/components/GameArea.tsx",
+          "src/components/ScoreBoard.tsx",
+          "src/components/UpgradeShop.tsx",
+          "src/components/FloatingText.tsx"
         ],
-        "created_at": "2026-03-18T18:39:08.933Z",
-        "last_updated": "2026-03-18T20:14:32.001Z"
-      },
-      "_finalReview": {
-        "final_quality": 75,
-        "summary": "The project implements core idle game mechanics with a functional React architecture and local storage persistence. However, it suffers from state synchronization race conditions during rapid purchases and includes unused dependencies that bloat the build.",
-        "suggestions": [
-          {
-            "preview": "Fix race condition in building purchase logic to prevent negative cookie balances.",
-            "detail": "In `src/hooks/useGameLogic.js`, the current implementation of `buyBuilding` checks affordability using `currentScoreRef.current`. This reference is updated via a `useEffect` hook that triggers after render, creating a race condition where rapid clicks can bypass cost checks and deduct more cookies than available. To fix this, refactor `buyBuilding` to use functional state updates exclusively for validation. Replace the synchronous check with `setTotalCookies(prevScore => { if (prevScore < building.cost) return prevScore; ... })`. This ensures the deduction only happens if the previous state was sufficient, guaranteeing atomic transaction safety. You must also update the `buildings` array within this same transactional flow or ensure they are updated in a subsequent effect that depends on the score change to prevent desync between inventory and currency. Remove the dependency on `currentScoreRef` for purchase validation entirely, keeping it only for debugging if necessary. Finally, ensure `GameFooter.jsx` buttons remain disabled visually until the state updates reflect the new cost, preventing users from clicking a button that just became unaffordable."
-          },
-          {
-            "preview": "Optimize floating number rendering and CPS calculation for better performance at scale.",
-            "detail": "In `src/hooks/useGameLogic.js`, the variable `cookiesPerSecond` is calculated on every render using `.reduce()`, which is inefficient as it runs even when buildings haven't changed. Wrap this calculation in `useMemo(() => buildings.reduce(...), [buildings])` to optimize performance and prevent unnecessary re-renders of child components. Furthermore, the floating number system creates a new timeout for every click, leading to potential memory leaks and UI stuttering at high CPS values. Modify `spawnFloatingNumber` to append an object with `{ id, value, x, y, createdAt: Date.now() }` instead of managing timeouts manually inside the function. Introduce a cleanup interval using `useEffect` that runs every 100ms to filter the `floatingNumbers` array, removing any entries where `Date.now() - item.createdAt > 1000`. In `src/components/FloatingNumber.jsx`, ensure the component handles unmounting gracefully by relying on CSS keyframes (`floatUp`) for opacity transitions rather than JS-driven removal. This shift to a centralized state loop reduces the number of active timers from O(N) clicks to O(1) global interval, significantly improving scalability and frame rate stability."
-          },
-          {
-            "preview": "Remove unused Tailwind dependencies and unify auto-save logic across components.",
-            "detail": "The project includes `tailwindcss` in `package.json` and config files but uses standard CSS classes defined in `src/index.css`, resulting in unnecessary build overhead. Remove the Tailwind dependencies (`tailwindcss`, `postcss`, `autoprefixer`) from `devDependencies` and delete `tailwind.config.js` to reduce bundle size and complexity. Additionally, the auto-save logic is split between `src/App.jsx` (5-second interval) and `useGameLogic.js` (manual save), causing the `isSaving` indicator in `GameHeader.jsx` to only appear on manual purchases. Consolidate all saving logic into `useGameLogic.js` by adding a `useEffect` that runs every 5 seconds calling `saveGame`. Expose the `isSaving` state from the hook so `App.jsx` can pass it directly to `GameHeader.jsx` without managing its own interval or payload refs. This ensures the save icon (\ud83d\udcbe) appears consistently during both background saves and manual transactions, providing accurate feedback to the user about data persistence status."
-          }
-        ]
+        "project_id": "attack-on-toilet",
+        "last_updated": "2026-03-18T22:37:34.732Z"
       }
     }
   },
   "meta": null,
   "pinData": {},
-  "versionId": "00f87eff-104c-491e-bd8c-303ba265b684",
-  "activeVersionId": "00f87eff-104c-491e-bd8c-303ba265b684",
-  "versionCounter": 276,
+  "versionId": "3c64e6c0-9423-4390-81ac-87c27be3ae70",
+  "activeVersionId": "3c64e6c0-9423-4390-81ac-87c27be3ae70",
+  "versionCounter": 290,
   "triggerCount": 1,
   "shared": [
     {
@@ -2272,9 +2377,9 @@
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-03-18T20:24:42.742Z",
-    "createdAt": "2026-03-18T20:24:42.742Z",
-    "versionId": "00f87eff-104c-491e-bd8c-303ba265b684",
+    "updatedAt": "2026-03-18T22:46:34.808Z",
+    "createdAt": "2026-03-18T22:46:34.808Z",
+    "versionId": "3c64e6c0-9423-4390-81ac-87c27be3ae70",
     "workflowId": "PNOMGkCjzFGxf52E",
     "nodes": [
       {
@@ -3214,7 +3319,7 @@
           500
         ],
         "parameters": {
-          "jsCode": "// Status callback to Forge \u2014 fire and forget\nconst http = require('http');\nconst event = 'planning_complete';\nconst projectId = $json.project_id || $getWorkflowStaticData('global')._currentProjectId || 'unknown';\nconst callbackData = { task_count: ($json.tasks || []).length, project_id: projectId };\n\ntry {\n  const body = JSON.stringify({ event, project_id: projectId, data: callbackData });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }\n  });\n  req.on('error', () => {});  // ignore errors \u2014 pipeline must not stop\n  req.write(body);\n  req.end();\n} catch(e) {}\n\nreturn [$input.all()[0]];  // pass through unchanged"
+          "jsCode": "// Status callback to Forge \u2014 fire and forget\nconst http = require('http');\nconst event = 'planning_complete';\nconst projectId = $json.project_id || $getWorkflowStaticData('global')._currentProjectId || 'unknown';\nconst callbackData = { task_count: ($json.tasks || []).length, project_id: projectId };\n\ntry {\n  const body = JSON.stringify({ event, project_id: projectId, data: callbackData });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }\n  });\n  req.on('error', () => {});  // ignore errors \u2014 pipeline must not stop\n  req.write(body);\n  req.end();\n} catch(e) {}\n\n// Stash plan for retrieval after Wait node\nconst staticData2 = $getWorkflowStaticData('global');\nstaticData2._pendingPlan = $input.all()[0].json;\n\nreturn [$input.all()[0]];  // pass through unchanged"
         }
       },
       {
@@ -3364,7 +3469,7 @@
           300
         ],
         "parameters": {
-          "jsCode": "const raw = ($json.choices && $json.choices[0] && $json.choices[0].message)\n  ? ($json.choices[0].message.content || $json.choices[0].message.reasoning_content || '')\n  : '';\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\nconst jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\nlet review;\ntry {\n  review = JSON.parse(jsonMatch ? jsonMatch[0] : content);\n} catch (e) {\n  review = { final_quality: 0, summary: 'Final review parse failed', suggestions: [] };\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData._finalReview = review;\n\n// Send callback to Forge\ntry {\n  const http = require('http');\n  const projectId = $('Prepare Planner Input').first().json.project_id || 'unknown';\n  const cbBody = JSON.stringify({\n    event: 'final_review_complete',\n    project_id: projectId,\n    data: { quality: review.final_quality, summary: review.summary, suggestions: review.suggestions }\n  });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(cbBody) }\n  });\n  req.on('error', () => {});\n  req.write(cbBody);\n  req.end();\n} catch(e) {}\n\nreturn [{ json: review }];"
+          "jsCode": "// Parse final review \u2014 robust JSON extraction\nconst msg = ($json.choices && $json.choices[0] && $json.choices[0].message) || {};\nlet raw = msg.content || '';\n\n// If content is empty/whitespace, try reasoning_content\nif (!raw.trim()) raw = msg.reasoning_content || '';\n\n// Strip thinking blocks\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\n\n// Strip markdown code fences\ncontent = content.replace(/^```(?:json)?\\n?/, '').replace(/\\n?```$/, '').trim();\n\n// Try multiple parse strategies\nlet review;\ntry {\n  // Strategy 1: direct parse (content is pure JSON)\n  review = JSON.parse(content);\n} catch(e1) {\n  try {\n    // Strategy 2: extract JSON object with balanced braces\n    let depth = 0, start = -1, end = -1;\n    for (let i = 0; i < content.length; i++) {\n      if (content[i] === '{') { if (depth === 0) start = i; depth++; }\n      if (content[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }\n    }\n    if (start >= 0 && end > start) {\n      review = JSON.parse(content.substring(start, end));\n    } else {\n      throw new Error('No balanced JSON found');\n    }\n  } catch(e2) {\n    review = { final_quality: 0, summary: 'Final review parse failed: ' + e2.message, suggestions: [] };\n  }\n}\n\n// Normalize suggestions format (handle both string[] and {preview, detail}[] )\nif (review.suggestions) {\n  review.suggestions = review.suggestions.map(s => {\n    if (typeof s === 'string') return s;\n    if (s && s.preview) return s;\n    return String(s);\n  });\n}\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData._finalReview = review;\n\n// Send callback to Forge\ntry {\n  const http = require('http');\n  const projectId = $('Prepare Planner Input').first().json.project_id || 'unknown';\n  const cbBody = JSON.stringify({\n    event: 'final_review_complete',\n    project_id: projectId,\n    data: { quality: review.final_quality, summary: review.summary, suggestions: review.suggestions }\n  });\n  const req = http.request({\n    hostname: 'forge', port: 3500, path: '/api/status-callback',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(cbBody) }\n  });\n  req.on('error', () => {});\n  req.write(cbBody);\n  req.end();\n} catch(e) {}\n\nreturn [{ json: review }];"
         }
       },
       {
@@ -4121,18 +4226,18 @@
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-03-18T20:24:42.795Z",
-        "id": 483,
+        "createdAt": "2026-03-18T22:46:34.859Z",
+        "id": 489,
         "workflowId": "PNOMGkCjzFGxf52E",
-        "versionId": "00f87eff-104c-491e-bd8c-303ba265b684",
+        "versionId": "3c64e6c0-9423-4390-81ac-87c27be3ae70",
         "event": "activated",
         "userId": "8a83cac8-2e54-48fc-8da6-ef4d02988d2f"
       },
       {
-        "createdAt": "2026-03-18T20:24:42.780Z",
-        "id": 482,
+        "createdAt": "2026-03-18T22:46:34.840Z",
+        "id": 488,
         "workflowId": "PNOMGkCjzFGxf52E",
-        "versionId": "00f87eff-104c-491e-bd8c-303ba265b684",
+        "versionId": "3c64e6c0-9423-4390-81ac-87c27be3ae70",
         "event": "deactivated",
         "userId": "8a83cac8-2e54-48fc-8da6-ef4d02988d2f"
       }

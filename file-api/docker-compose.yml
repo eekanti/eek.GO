@@ -9,8 +9,11 @@ services:
     environment:
       - PROJECTS_ROOT=/projects
       - PORT=3456
+      - PREVIEW_PORT=4000
     volumes:
       - /home/will/src:/projects
+    ports:
+      - "4000:4000"
     networks:
       - shared_net
 

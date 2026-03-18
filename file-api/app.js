@@ -257,6 +257,118 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
+// ─── Preview: build & run projects ─────────────────────────────────────
+const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT) || 4000;
+let activePreview = null; // { projectId, process, port }
+
+// POST /projects/:id/preview/start — npm install + dev server
+app.post('/projects/:id/preview/start', async (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(base)) return res.status(404).json({ error: 'Project not found' });
+    if (!fs.existsSync(path.join(base, 'package.json'))) {
+      return res.status(400).json({ error: 'No package.json — project cannot be built' });
+    }
+
+    // Kill existing preview if running
+    if (activePreview?.process) {
+      try { activePreview.process.kill('SIGTERM'); } catch {}
+      activePreview = null;
+    }
+
+    // npm install
+    try {
+      execSync('npm install --no-audit --no-fund', { cwd: base, encoding: 'utf8', timeout: 120000, stdio: 'pipe' });
+    } catch (e) {
+      return res.status(500).json({ error: 'npm install failed', detail: (e.stderr || e.message).slice(0, 500) });
+    }
+
+    // Detect the dev command and framework
+    const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json'), 'utf8'));
+    const scripts = pkg.scripts || {};
+
+    // Start dev server
+    const { spawn } = require('child_process');
+    let cmd, args;
+    if (scripts.dev) {
+      // Use npx to run whatever 'dev' script uses (vite, next, etc.)
+      cmd = 'npx';
+      // Try vite first (most common), fall back to generic npm run dev
+      if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'vite'))) {
+        args = ['vite', '--host', '0.0.0.0', '--port', String(PREVIEW_PORT)];
+      } else if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'next'))) {
+        args = ['next', 'dev', '-H', '0.0.0.0', '-p', String(PREVIEW_PORT)];
+      } else {
+        cmd = 'npm';
+        args = ['run', 'dev'];
+      }
+    } else {
+      return res.status(400).json({ error: 'No dev script in package.json' });
+    }
+
+    const child = spawn(cmd, args, {
+      cwd: base,
+      env: { ...process.env, PORT: String(PREVIEW_PORT) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    child.stdout.on('data', d => output += d.toString());
+    child.stderr.on('data', d => output += d.toString());
+
+    activePreview = { projectId: req.params.id, process: child, port: PREVIEW_PORT };
+
+    child.on('exit', () => {
+      if (activePreview?.projectId === req.params.id) activePreview = null;
+    });
+
+    // Wait for server to be ready (poll for up to 15s)
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const http = require('http');
+        await new Promise((resolve, reject) => {
+          const req = http.get(`http://localhost:${PREVIEW_PORT}`, r => { r.resume(); resolve(); });
+          req.on('error', reject);
+          req.setTimeout(1000, () => { req.destroy(); reject(); });
+        });
+        ready = true;
+        break;
+      } catch {}
+    }
+
+    if (!ready) {
+      child.kill('SIGTERM');
+      activePreview = null;
+      return res.status(500).json({ error: 'Dev server failed to start', output: output.slice(0, 1000) });
+    }
+
+    res.json({ status: 'running', project_id: req.params.id, port: PREVIEW_PORT, url: `http://10.0.0.100:${PREVIEW_PORT}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /projects/:id/preview/stop — kill dev server
+app.post('/projects/:id/preview/stop', (req, res) => {
+  if (!activePreview || activePreview.projectId !== req.params.id) {
+    return res.json({ status: 'not_running' });
+  }
+  try { activePreview.process.kill('SIGTERM'); } catch {}
+  activePreview = null;
+  res.json({ status: 'stopped' });
+});
+
+// GET /preview/status — check if a preview is running
+app.get('/preview/status', (req, res) => {
+  if (activePreview) {
+    res.json({ status: 'running', project_id: activePreview.projectId, port: activePreview.port, url: `http://10.0.0.100:${activePreview.port}` });
+  } else {
+    res.json({ status: 'stopped' });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
