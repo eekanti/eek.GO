@@ -1,5 +1,5 @@
 {
-  "name": "coding-dashboard",
+  "name": "eek-forge",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,9 @@
   },
   "dependencies": {
     "express": "^4.18.2",
+    "better-sqlite3": "^11.7.0",
+    "@heroui/react": "^2.7.2",
+    "framer-motion": "^11.18.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

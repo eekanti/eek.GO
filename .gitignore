@@ -1,17 +1,22 @@
 # Generated project output
 /home/will/src/
-src/
 
-# Environment files
+# Environment files (keep .env.example as template)
 .env
 *.env
 .env.*
 !.env.example
+!workflows/.env.example
 
 # Node
 node_modules/
 dist/
 build/
+
+# SQLite databases (persisted in Docker volumes)
+*.db
+*.db-wal
+*.db-shm
 
 # Logs
 *.log
@@ -20,3 +25,7 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/
+.idea/

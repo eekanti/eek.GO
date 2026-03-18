@@ -11,8 +11,14 @@ services:
       - N8N_URL=http://n8n:5678
       - WEBHOOK_PATH=/webhook/coding-agent
       - PORT=3500
+      - DB_PATH=/data/forge.db
+    volumes:
+      - forge-data:/data
     networks:
       - shared_net
+
+volumes:
+  forge-data:
 
 networks:
   shared_net:

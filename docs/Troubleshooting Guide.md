@@ -1,157 +1,138 @@
-# Troubleshooting Guide
+# Troubleshooting Guide — eek-Go v2
 
 ## LM Studio Connection
 
 ### "Failed to connect to LM Studio"
 
 ```bash
-curl -v $LM_STUDIO_URL  # default: http://10.0.0.100:1234/v1/chat/completions
+curl http://10.0.0.100:1234/v1/models
 ```
 
-1. Open LM Studio → **Server** tab → select model → **Start Server**
+1. Open LM Studio → verify server is running on port 1234
 2. Check firewall allows port 1234 inbound
-3. If the IP changed, update `LM_STUDIO_URL` in `workflows/.env` and restart n8n
+3. If the IP changed, update `LM_STUDIO_HOST` and `LM_STUDIO_URL` in `workflows/.env`
 
 ### 401 Unauthorized
 
-All agents send `Authorization: Bearer $env.LLM_API_KEY`. Set `LLM_API_KEY` in `workflows/.env` (and in n8n's environment) to match the API key in LM Studio → Server → API Key.
+All pipeline nodes send `Authorization: Bearer $env.LLM_API_KEY`. Set `LLM_API_KEY` in `workflows/.env` to match LM Studio's API key.
+
+### Model won't load / VRAM errors
+
+The pipeline loads/unloads models between phases (only one at a time). If a previous run crashed, a model may still be loaded. The `Startup: Unload All Models` node clears this automatically, but you can also:
+
+```bash
+# List loaded models
+curl http://10.0.0.100:1234/api/v1/models -H "Authorization: Bearer <key>"
+
+# Unload by instance ID
+curl -X POST http://10.0.0.100:1234/api/v1/models/unload \
+  -H "Content-Type: application/json" \
+  -d '{"instance_id": "<id>"}'
+```
+
+### Planner timeout (300s+)
+
+Qwen3.5-27B is a reasoning model — it generates `<think>` tokens before responding. With `max_tokens: 32768`, generation can take 10+ minutes. The planner HTTP timeout is 600s. Monitor with:
+
+```bash
+lms log stream
+```
 
 ### Empty / blank responses
 
-Qwen3 thinking models put output in `reasoning_content`, leaving `content` empty. All parse-response Code nodes already handle this:
-- Prompts end with `/nothink` to suppress chain-of-thought
-- Parse nodes strip `<think>...</think>` blocks and fall back to `msg.reasoning_content`
-
-If responses are truncated, increase `max_tokens` in the Build Request / Prepare Message node of the failing workflow.
+Qwen3.5 reasoning models put output in `reasoning_content`, not `content`. All parse nodes handle this by checking both fields and stripping `<think>` blocks.
 
 ---
 
-## Webhook 404
+## n8n Workflow
 
-n8n 2.10+ prepends the workflow ID to the webhook path:
+### Webhook 404
+
+The webhook URL is simply `/webhook/coding-agent` (no workflow ID prefix needed for the current setup).
+
+### Infinite loop in Phase 2
+
+**NEVER use n8n IF nodes for loop control.** IF nodes cache their condition from the first iteration and reuse it for all subsequent iterations. The current design uses Code node "gates" instead:
+
 ```
-/webhook/{workflowId}/webhook/coding-agent
-```
-
-Find the correct URL: open Master Orchestrator in n8n → click **Webhook** node → copy the **Production URL**.
-
----
-
-## Sub-workflow Errors
-
-### "Workflow not found" / Execute Workflow fails
-
-- Confirm the sub-workflow is **activated** (toggle in n8n)
-- Confirm the workflow ID matches — check `WF_*` vars in `workflows/.env`
-- Call chain: `00` → `01`, `03`, `04`, `07`; `04` → `06`; `06` → `02`, `05`
-
-### Wrong data format
-
-All sub-workflows use Execute Workflow `typeVersion: 1.1`:
-```json
-{ "__rl": true, "value": "WORKFLOW_ID", "mode": "id" }
+P2: Store Result → P2: Continue Gate → P2: Stash Context (loop back)
+                 ↘ P2: Exit Gate → Unload Coder Model (exits)
 ```
 
+Each gate is a Code node that returns `[]` (empty array) to kill its branch when not applicable.
+
+### n8n expression caching in loops
+
+`$('NodeName').first().json` always returns the FIRST iteration's data in loops. Use `$json` (direct input) or `$getWorkflowStaticData('global')` instead.
+
+### P3: Needs Fix? always triggers fix phase
+
+Boolean conditions in IF nodes with `typeValidation: "loose"` convert `false` to string `"false"` (truthy). Use `number.gt(0)` with `strict` validation instead.
+
+### Status callbacks not reaching Forge
+
+Callback nodes POST to `http://forge:3500/api/status-callback`. Verify:
+1. Forge container is running: `docker ps | grep forge`
+2. Forge is on `shared_net`: `docker inspect forge --format '{{range $net, $_ := .NetworkSettings.Networks}}{{$net}} {{end}}'`
+3. All callback nodes have `onError: "continueRegularOutput"` — pipeline never stops if Forge is down
+
 ---
 
-## Code Writer (02)
+## eek-Forge
 
-### Not reflecting previous feedback on retry
+### "fetch failed" error in chat
 
-The Code Writer is stateless — no session memory. On P2 retry, `previous_feedback` is re-sent with the full context. If feedback isn't being applied:
-1. Open the failing execution in n8n
-2. Check **Build Retry Input** in `06-Chunk-Processor` — confirm `previous_feedback` is populated
-3. Check the retry Code Writer response
+Normal behavior. The n8n webhook holds the HTTP connection open until the pipeline finishes (~5-10 min). Forge's fetch has a 10s AbortController timeout — the abort is silently ignored since all status comes via SSE callbacks. If you see this error, it's from before the timeout fix was deployed.
 
-### Partial file output
+### "Pipeline running" disappears when switching projects
 
-The Code Writer receives a `FILES TO MODIFY` constraint from `task.files`. If the Planner didn't include a `files` array, no constraint is sent and the model may produce extra files.
+Fixed: the chat context now checks the last status message when loading a project. If the last event isn't `pipeline_complete` or `pipeline_error`, it restores the running state.
 
----
+### `[object Object]` in task status
 
-## Chunk Processor (06) / Quality Gate
+The file-api returns `files_written` as `[{path, bytes, success}]` objects. The `P2: Store Result` node extracts `.path` from each. If you see `[object Object]`, the extraction isn't working — check the `writtenFiles` line in that node.
 
-### Tasks stuck retrying
+### Projects from disk showing in sidebar
 
-Gate condition: `(job_complete === true OR quality_score >= 80) AND critical_issues.length === 0`
+Only SQLite-created projects show in the sidebar. The old behavior merged file-api disk listing (which included `.claude`, `eek-dash`, etc.). This was removed.
 
-After 2 passes (P1 → P2), files are written regardless. To adjust, edit the **Review Gate** Code node in `06-Chunk-Processor`.
+### SSE not reconnecting
 
-### Reviewer returns unparseable output
-
-If the Combined Reviewer returns `raw_output` (parse failure), code is accepted as-is. Check LM Studio is returning valid JSON. Increase `max_tokens` in `05-Combined-Reviewer-Agent` if responses appear truncated.
-
-### Chunks not progressing
-
-Task Processor uses `getWorkflowStaticData('global')` to queue chunks. If an execution crashes, stale state may remain. To clear: open `04-Task-Processor` → Settings → clear static data (or re-import the workflow).
+`EventSource` auto-reconnects. On reconnect, refresh the page to reload messages from SQLite (messages received while disconnected are persisted server-side).
 
 ---
 
 ## File API
 
-The File API lives in `file-api/` and reads config from `workflows/.env`.
-
 ### 401 Unauthorized
 
-`FILE_API_TOKEN` in `workflows/.env` must match what `06-Chunk-Processor` sends as `Authorization: Bearer $env.FILE_API_TOKEN`.
+`FILE_API_TOKEN` in `workflows/.env` must match what pipeline nodes send.
 
-### Files not appearing on disk
+### Files not on disk
 
 ```bash
 docker ps | grep file-api
 curl -H "Authorization: Bearer <token>" http://localhost:3456/health
 ```
 
-Files are written to `/home/will/src/{project_id}/`. The container runs as UID 1000.
+Files are written to the Docker volume mapped to `/home/will/src/` on the host.
 
-### Path traversal blocked (500)
+### Scrape endpoint failing
 
-The File API rejects paths that escape the project root. Ensure file paths are relative (e.g., `src/index.ts`).
-
----
-
-## Research Agent (07)
-
-### Library docs not being fetched
-
-The Research Agent connects to Context7 MCP at `$env.MCP_GATEWAY_URL` (default: `http://docky:8811/mcp`). If docky is down, the agent skips gracefully.
-
-```bash
-docker ps | grep docky
-```
-
-Supported libraries: React, HeroUI, Tailwind, Vite, Next.js, Express, Prisma, Drizzle, Fastify, Hono, Zod, tRPC, Framer Motion. To add more, edit the **Extract Libraries** Code node in `07-Research-Agent.json`.
-
----
-
-## Project Memory (03)
-
-### Memory not persisting across restarts
-
-`getWorkflowStaticData('global')` persists as long as the workflow isn't re-imported. Re-importing resets static data.
-
-### Wrong project loaded
-
-Each project is keyed by `project_id`. Always pass the same `project_id` to continue an existing project.
-
----
-
-## n8n Container
-
-```bash
-docker compose -f /docker/stacks/n8n/n8n.yml logs -f n8n    # view logs
-docker compose -f /docker/stacks/n8n/n8n.yml restart n8n     # restart
-```
+The `/scrape` endpoint uses Playwright + Chromium. If it fails:
+1. Check the target URL is accessible from the Docker network
+2. `onError: continueRegularOutput` on `P0: Scrape URL` means scrape failures don't kill the pipeline
+3. The scrape has a 30s timeout
 
 ---
 
 ## Quick Checklist
 
-1. LM Studio running with both models loaded? (`qwen3.5-9b` + `qwen2.5-coder-32b-instruct`)
-2. Can you reach LM Studio? `curl http://10.0.0.100:1234/v1/models`
-3. `workflows/.env` populated with all variables?
-4. n8n env vars include `LLM_API_KEY`, `LM_STUDIO_URL`, model names, `FILE_API_URL`, `FILE_API_TOKEN`, `MCP_GATEWAY_URL`?
-5. All 8 workflows activated in n8n? (00–07)
-6. `WF_*` IDs in `workflows/.env` match your n8n instance?
-7. File-api container running? `docker ps | grep file-api`
-8. Webhook URL includes workflow ID prefix?
+1. LM Studio running at `http://10.0.0.100:1234`?
+2. `workflows/.env` populated with all variables?
+3. n8n running? `docker ps | grep n8n`
+4. File-api running? `docker ps | grep file-api`
+5. Forge running? `docker ps | grep forge`
+6. All on `shared_net`? `docker network inspect shared_net | jq '.[0].Containers | keys'`
+7. Workflow activated in n8n? Check `http://localhost:5678`
+8. Models available in LM Studio? `qwen3.5-27b@q4_k_m` + `qwen/qwen3-30b-a3b-2507`

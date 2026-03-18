@@ -1,9 +1,8 @@
 import express from 'express'
-import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import path from 'path'
+import db, { ensureProject } from './db.js'
 
-const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const app = express()
@@ -13,134 +12,207 @@ const N8N_URL = process.env.N8N_URL || 'http://n8n:5678'
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook/coding-agent'
 const FILE_API_URL = process.env.FILE_API_URL || 'http://file-api:3456'
 const FILE_API_TOKEN = process.env.FILE_API_TOKEN || ''
-const N8N_API_KEY = process.env.N8N_API_KEY || ''
-const MASTER_WORKFLOW_ID = process.env.WF_MASTER_ORCHESTRATOR || ''
-
-// Build stage info from WF_* env vars — no hardcoded workflow IDs
-const STAGE_INFO = {}
-if (process.env.WF_PROJECT_MEMORY) STAGE_INFO[process.env.WF_PROJECT_MEMORY] = { icon: '🧠', label: 'Project Memory' }
-if (process.env.WF_PLANNER) STAGE_INFO[process.env.WF_PLANNER] = { icon: '🗂️', label: 'Planning Tasks' }
-if (process.env.WF_TASK_PROCESSOR) STAGE_INFO[process.env.WF_TASK_PROCESSOR] = { icon: '⚙️', label: 'Task Processor' }
-if (process.env.WF_CODE_WRITER) STAGE_INFO[process.env.WF_CODE_WRITER] = { icon: '✍️', label: 'Code Writer' }
-if (process.env.WF_COMBINED_REVIEWER) STAGE_INFO[process.env.WF_COMBINED_REVIEWER] = { icon: '✅', label: 'Combined Review' }
-if (process.env.WF_CHUNK_PROCESSOR) STAGE_INFO[process.env.WF_CHUNK_PROCESSOR] = { icon: '📦', label: 'Chunk Processor' }
-if (process.env.WF_RESEARCH_AGENT) STAGE_INFO[process.env.WF_RESEARCH_AGENT] = { icon: '📚', label: 'Research Agent' }
 
 // Serve built React app
 app.use(express.static(path.join(__dirname, 'dist')))
 
-// Run a workflow job — triggers n8n immediately then polls for result
-app.post('/api/run', async (req, res) => {
-  console.log('[run]', new Date().toISOString(), JSON.stringify(req.body))
-  const startedAfter = new Date().toISOString()
+// ─── SSE infrastructure ────────────────────────────────────────────────
+const sseClients = new Map() // project_id → Set<Response>
 
-  // Step 1: Trigger webhook (n8n responds immediately, workflow runs async)
-  try {
-    const trigger = await fetch(`${N8N_URL}${WEBHOOK_PATH}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    })
-    if (!trigger.ok) {
-      const text = await trigger.text()
-      return res.status(502).json({ error: `n8n webhook returned ${trigger.status}`, raw: text.slice(0, 200) })
-    }
-  } catch (e) {
-    if (e.cause?.code === 'ECONNREFUSED') {
-      return res.status(503).json({ error: 'Cannot connect to n8n — is it running?' })
-    }
-    return res.status(500).json({ error: e.message })
+function broadcast(projectId, event, data) {
+  const clients = sseClients.get(projectId)
+  if (!clients || clients.size === 0) return
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+  for (const client of clients) {
+    client.write(payload)
   }
+}
 
-  if (!N8N_API_KEY) {
-    return res.json({ status: 'started', message: 'Workflow triggered. No API key set — cannot poll for results.' })
-  }
+app.get('/api/chat/stream/:projectId', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
 
-  // Step 2: Poll execution API until done
-  const POLL_MS = 8000
-  const TIMEOUT_MS = 50 * 60 * 1000
-  const pollStart = Date.now()
-  let executionId = null
+  const pid = req.params.projectId
+  if (!sseClients.has(pid)) sseClients.set(pid, new Set())
+  sseClients.get(pid).add(res)
 
-  while (Date.now() - pollStart < TIMEOUT_MS) {
-    await new Promise(r => setTimeout(r, POLL_MS))
-    try {
-      const listRes = await fetch(
-        `${N8N_URL}/api/v1/executions?workflowId=${MASTER_WORKFLOW_ID}&limit=5`,
-        { headers: { 'X-N8N-API-KEY': N8N_API_KEY } }
-      )
-      if (!listRes.ok) continue
-      const list = await listRes.json()
-      const exec = (list.data || []).find(e => e.startedAt >= startedAfter)
-      if (!exec) continue
-      executionId = exec.id
-      if (exec.status === 'running' || exec.status === 'new' || exec.status === 'waiting') continue
-      if (exec.status === 'error') {
-        return res.status(500).json({ error: 'Workflow execution failed', executionId: exec.id })
-      }
-      if (exec.status === 'success') {
-        // Fetch full data to extract Build Response node output
-        const dataRes = await fetch(
-          `${N8N_URL}/api/v1/executions/${exec.id}?includeData=true`,
-          { headers: { 'X-N8N-API-KEY': N8N_API_KEY } }
-        )
-        if (!dataRes.ok) return res.json({ status: 'completed', executionId: exec.id })
-        const execData = await dataRes.json()
-        const runData = execData.data?.resultData?.runData || {}
-        const result = runData['Build Response']?.[0]?.data?.main?.[0]?.[0]?.json
-        return res.json(result || { status: 'completed', executionId: exec.id })
-      }
-    } catch (e) {
-      console.error('[poll error]', e.message)
-    }
-  }
-
-  res.status(504).json({ error: 'Workflow timed out after 50 minutes.', executionId })
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 30000)
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    sseClients.get(pid)?.delete(res)
+  })
 })
 
-// Real-time execution progress from n8n
-app.get('/api/progress', async (req, res) => {
-  const { since } = req.query
-  if (!since) return res.status(400).json({ error: 'since required' })
-  if (!N8N_API_KEY) return res.json({ executions: [] })
-  try {
-    const upstream = await fetch(`${N8N_URL}/api/v1/executions?limit=50`, {
-      headers: { 'X-N8N-API-KEY': N8N_API_KEY },
-    })
-    if (!upstream.ok) return res.json({ executions: [] })
-    const data = await upstream.json()
-    const executions = (data.data || [])
-      .filter(e => e.startedAt >= since && STAGE_INFO[e.workflowId])
-      .map(e => ({
-        id: e.id,
-        icon: STAGE_INFO[e.workflowId].icon,
-        label: STAGE_INFO[e.workflowId].label,
-        status: e.status,
-        startedAt: e.startedAt,
-        stoppedAt: e.stoppedAt || null,
-        durationSec: e.stoppedAt
-          ? Math.round((new Date(e.stoppedAt) - new Date(e.startedAt)) / 1000)
-          : null,
-      }))
-    res.json({ executions })
-  } catch {
-    res.json({ executions: [] })
+// ─── Status callback (called BY n8n workflow nodes) ────────────────────
+app.post('/api/status-callback', (req, res) => {
+  const { event, project_id, data } = req.body
+  if (!project_id) return res.status(400).json({ error: 'project_id required' })
+
+  // Ensure project exists (in case callback arrives before UI creates it)
+  ensureProject(project_id, project_id)
+
+  const statusMessages = {
+    pipeline_started: '⚡ Starting pipeline...',
+    planning_complete: `🗂️ Planned ${data?.task_count || 0} tasks`,
+    task_written: `✍️ Wrote ${data?.task_id || 'task'}: ${(data?.files || []).join(', ')}`,
+    review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
+    fix_applied: `🔧 Applied fixes`,
+    final_review_complete: `📋 Final review: ${data?.quality || '?'}/100`,
+    pipeline_complete: `🎉 Pipeline finished! ${data?.tasks_completed || 0} tasks, ${data?.files_written?.length || 0} files`,
+    pipeline_error: `⚠️ Error: ${data?.error || 'unknown'}`
   }
+
+  const content = statusMessages[event] || event
+
+  // Save as status message in chat history
+  db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+    .run(project_id, 'status', content, 'status_update', JSON.stringify({ event, ...data }))
+
+  // If pipeline complete, also save a rich assistant result message
+  if (event === 'pipeline_complete' && data) {
+    db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+      .run(project_id, 'assistant', data.summary || 'Build complete', 'pipeline_result', JSON.stringify(data))
+    db.prepare('UPDATE projects SET updated_at = datetime(\'now\') WHERE id = ?').run(project_id)
+  }
+
+  if (event === 'pipeline_error' && data) {
+    db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+      .run(project_id, 'assistant', data.error || 'Pipeline failed', 'error', JSON.stringify(data))
+  }
+
+  // Broadcast to connected SSE clients
+  broadcast(project_id, event, { message: content, ...data, timestamp: new Date().toISOString() })
+
+  res.json({ ok: true })
 })
 
-// List projects on disk
-app.get('/api/projects', async (req, res) => {
+// ─── Project routes ────────────────────────────────────────────────────
+
+// Create a new project
+app.post('/api/projects', (req, res) => {
+  const { id, display_name } = req.body
+  if (!id || !display_name) return res.status(400).json({ error: 'id and display_name required' })
+
+  // Sanitize id for use as folder name
+  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(safeId)
+  if (existing) return res.status(409).json({ error: 'Project already exists' })
+
+  db.prepare('INSERT INTO projects (id, display_name) VALUES (?, ?)').run(safeId, display_name)
+  res.json({ id: safeId, display_name })
+})
+
+// List projects — only from SQLite (user-created projects)
+app.get('/api/projects', (_req, res) => {
   try {
-    const upstream = await fetch(`${FILE_API_URL}/projects`, {
-      headers: { Authorization: `Bearer ${FILE_API_TOKEN}` },
+    const dbProjects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all()
+    const projects = dbProjects.map(p => {
+      const lastMsg = db.prepare('SELECT content, created_at FROM messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(p.id)
+      return {
+        id: p.id,
+        display_name: p.display_name,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        last_message: lastMsg?.content || null,
+        last_activity: lastMsg?.created_at || p.updated_at,
+      }
     })
-    res.json(await upstream.json())
+    res.json({ projects })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
-// List files in a project
+// Delete a project (removes from SQLite only — files on disk are kept)
+app.delete('/api/projects/:id', (req, res) => {
+  const { id } = req.params
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+  if (!existing) return res.status(404).json({ error: 'Project not found' })
+  db.prepare('DELETE FROM messages WHERE project_id = ?').run(id)
+  db.prepare('DELETE FROM executions WHERE project_id = ?').run(id)
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+  res.json({ ok: true, deleted: id })
+})
+
+// ─── Chat routes ───────────────────────────────────────────────────────
+
+// Get messages for a project
+app.get('/api/projects/:id/messages', (req, res) => {
+  const { id } = req.params
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+  const before = req.query.before ? parseInt(req.query.before) : null
+
+  let messages
+  if (before) {
+    messages = db.prepare('SELECT * FROM messages WHERE project_id = ? AND id < ? ORDER BY id DESC LIMIT ?')
+      .all(id, before, limit).reverse()
+  } else {
+    messages = db.prepare('SELECT * FROM messages WHERE project_id = ? ORDER BY id DESC LIMIT ?')
+      .all(id, limit).reverse()
+  }
+
+  // Parse metadata JSON for each message
+  const parsed = messages.map(m => ({
+    ...m,
+    metadata: m.metadata ? JSON.parse(m.metadata) : null
+  }))
+
+  res.json({ messages: parsed })
+})
+
+// Send a chat message and trigger the pipeline
+app.post('/api/chat/send', async (req, res) => {
+  const { project_id, content, images, reference_url } = req.body
+  if (!project_id || !content) return res.status(400).json({ error: 'project_id and content required' })
+
+  // Ensure project exists
+  ensureProject(project_id, project_id)
+
+  // Save user message
+  const metadata = JSON.stringify({ images: images || [], reference_url: reference_url || null })
+  const result = db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+    .run(project_id, 'user', content, images?.length ? 'image' : 'text', metadata)
+
+  db.prepare('UPDATE projects SET updated_at = datetime(\'now\') WHERE id = ?').run(project_id)
+
+  // Trigger n8n webhook (fire-and-forget — status comes via callbacks)
+  // Abort after 10s — we don't need the response, all progress comes via SSE callbacks
+  const webhookBody = {
+    message: content,
+    project_id,
+    reference_url: reference_url || undefined,
+    image_data: images?.[0] || undefined,
+  }
+
+  const abortCtrl = new AbortController()
+  const abortTimer = setTimeout(() => abortCtrl.abort(), 10000)
+
+  fetch(`${N8N_URL}${WEBHOOK_PATH}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(webhookBody),
+    signal: abortCtrl.signal,
+  })
+    .then(() => clearTimeout(abortTimer))
+    .catch(e => {
+      clearTimeout(abortTimer)
+      // Aborted = expected (webhook takes minutes), only log real connection errors
+      if (e.name === 'AbortError') return
+      console.error('[webhook error]', e.message)
+      db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+        .run(project_id, 'status', `⚠️ Failed to reach pipeline: ${e.message}`, 'error')
+      broadcast(project_id, 'pipeline_error', { error: e.message })
+    })
+
+  // Return immediately — don't wait for pipeline
+  res.json({ message_id: result.lastInsertRowid })
+})
+
+// ─── File-API proxy routes (kept from original) ───────────────────────
+
 app.get('/api/project/:id/files', async (req, res) => {
   try {
     const upstream = await fetch(`${FILE_API_URL}/projects/${req.params.id}/files`, {
@@ -152,8 +224,8 @@ app.get('/api/project/:id/files', async (req, res) => {
   }
 })
 
-// SPA fallback
+// ─── SPA fallback ──────────────────────────────────────────────────────
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')))
 
-const PORT = process.env.PORT || 3000
-app.listen(PORT, () => console.log(`Forge dashboard on http://localhost:${PORT}`))
+const PORT = process.env.PORT || 3500
+app.listen(PORT, () => console.log(`eek-Forge on http://localhost:${PORT}`))
