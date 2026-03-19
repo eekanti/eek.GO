@@ -257,6 +257,35 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
+// ─── Build check: npm install + build, return errors ───────────────────
+app.post('/projects/:id/build-check', (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(base)) return res.status(404).json({ error: 'Project not found' });
+    if (!fs.existsSync(path.join(base, 'package.json'))) {
+      return res.json({ success: false, error: 'No package.json', output: '' });
+    }
+
+    // npm install
+    try {
+      execSync('npm install --no-audit --no-fund 2>&1', { cwd: base, encoding: 'utf8', timeout: 120000, stdio: 'pipe' });
+    } catch (e) {
+      return res.json({ success: false, stage: 'install', error: 'npm install failed', output: (e.stderr || e.stdout || e.message).slice(0, 2000) });
+    }
+
+    // Try build
+    try {
+      const output = execSync('npx vite build 2>&1', { cwd: base, encoding: 'utf8', timeout: 60000, stdio: 'pipe' });
+      return res.json({ success: true, output: output.slice(0, 1000) });
+    } catch (e) {
+      const output = (e.stderr || e.stdout || e.message);
+      return res.json({ success: false, stage: 'build', error: 'Build failed', output: output.slice(0, 3000) });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ─── Preview: build & run projects ─────────────────────────────────────
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT) || 4000;
 let activePreview = null; // { projectId, process, port }

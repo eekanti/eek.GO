@@ -66,6 +66,9 @@ app.post('/api/status-callback', (req, res) => {
     task_written: `✍️ Wrote ${data?.task_id || 'task'}: ${(data?.files || []).join(', ')}`,
     review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
     research_complete: `📚 Fetched docs for ${(data?.libraries_fetched || []).join(', ') || 'libraries'} (${data?.doc_count || 0} docs)`,
+    build_check_passed: `✅ Build check passed`,
+    build_check_failed: `❌ Build failed: ${data?.error || 'unknown'} (${data?.stage || 'build'})`,
+    visual_review_complete: `👁️ Visual review: ${data?.visual_quality || '?'}/100 — ${data?.summary || 'done'}`,
     fix_applied: `🔧 Applied ${data?.fix_count || ''} fix${(data?.fix_count || 0) !== 1 ? 'es' : ''}: ${(data?.files_fixed || []).join(', ') || 'unknown files'}`,
     plan_approval: `📋 Plan ready for review (${data?.task_count || 0} tasks, ${data?.total_files || 0} files)`,
     plan_approved: `✅ Plan ${data?.action === 'edit' ? 'approved with edits' : 'approved'} — continuing...`,
@@ -366,8 +369,90 @@ app.post('/api/chat/send', async (req, res) => {
   }
 })
 
-// Helper: fire the n8n pipeline
-function triggerPipeline(project_id, message, images, reference_url) {
+// ─── Stitch: generate concept UI ───────────────────────────────────────
+
+const STITCH_API_KEY = process.env.STITCH_API_KEY || ''
+const STITCH_URL = 'https://stitch.googleapis.com/mcp'
+
+async function generateConceptUI(prompt, project_id) {
+  if (!STITCH_API_KEY) return null
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+      'X-Goog-Api-Key': STITCH_API_KEY,
+    }
+
+    // Create project
+    const createRes = await fetch(STITCH_URL, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0', method: 'tools/call', id: Date.now(),
+        params: { name: 'create_project', arguments: { title: project_id } }
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+    const createData = await createRes.json()
+    const projectText = createData.result?.content?.[0]?.text || ''
+    const projectInfo = JSON.parse(projectText)
+    const stitchProjectId = projectInfo.name?.replace('projects/', '')
+    if (!stitchProjectId) return null
+
+    // Generate screen
+    const genRes = await fetch(STITCH_URL, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0', method: 'tools/call', id: Date.now(),
+        params: {
+          name: 'generate_screen_from_text',
+          arguments: {
+            projectId: stitchProjectId,
+            prompt: prompt.substring(0, 1000),
+            deviceType: 'MOBILE',
+            modelId: 'GEMINI_3_FLASH',
+          }
+        }
+      }),
+      signal: AbortSignal.timeout(60000),
+    })
+    const genData = await genRes.json()
+    const genText = genData.result?.content?.[0]?.text || ''
+    const genInfo = JSON.parse(genText)
+
+    // Extract screenshot URL
+    const screens = genInfo.outputComponents?.[0]?.design?.screens || []
+    const screenshotUrl = screens[0]?.screenshot?.downloadUrl
+    if (!screenshotUrl) return null
+
+    // Download screenshot as base64
+    const imgRes = await fetch(screenshotUrl + '=s1024', { signal: AbortSignal.timeout(15000) })
+    const imgBuffer = await imgRes.arrayBuffer()
+    const base64 = Buffer.from(imgBuffer).toString('base64')
+
+    return base64
+  } catch (e) {
+    console.error('[stitch error]', e.message)
+    return null
+  }
+}
+
+// Helper: fire the n8n pipeline (with optional Stitch concept generation)
+async function triggerPipeline(project_id, message, images, reference_url) {
+  // Generate concept UI with Stitch if no reference image provided
+  if (!images?.length && !reference_url && STITCH_API_KEY) {
+    broadcast(project_id, 'stitch_generating', { message: '🎨 Generating concept UI with Stitch...' })
+    db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+      .run(project_id, 'status', '🎨 Generating concept UI with Stitch...', 'status_update')
+
+    const conceptImage = await generateConceptUI(message, project_id)
+    if (conceptImage) {
+      images = [conceptImage]
+      broadcast(project_id, 'stitch_complete', { message: '🎨 Concept UI generated — using as reference' })
+      db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+        .run(project_id, 'status', '🎨 Concept UI generated — using as reference', 'status_update')
+    }
+  }
   const webhookBody = {
     message,
     project_id,
@@ -443,16 +528,17 @@ app.get('/api/projects/:id/stats', async (req, res) => {
             for (const [node, label, icon] of phaseMap) {
               const runs = rd[node] || []
               if (runs.length > 0) {
-                let totalPrompt = 0, totalCompletion = 0, callCount = runs.length
+                let peakPrompt = 0, peakCompletion = 0, peakTotal = 0, callCount = runs.length
                 for (const run of runs) {
                   const out = run.data?.main?.[0]?.[0]
                   if (out) {
                     const u = out.json?.usage || {}
-                    totalPrompt += u.prompt_tokens || 0
-                    totalCompletion += u.completion_tokens || 0
+                    const p = u.prompt_tokens || 0
+                    const c = u.completion_tokens || 0
+                    if (p + c > peakTotal) { peakPrompt = p; peakCompletion = c; peakTotal = p + c }
                   }
                 }
-                phases.push({ label, icon, calls: callCount, promptTokens: totalPrompt, completionTokens: totalCompletion, totalTokens: totalPrompt + totalCompletion })
+                phases.push({ label, icon, calls: callCount, promptTokens: peakPrompt, completionTokens: peakCompletion, totalTokens: peakTotal })
               }
             }
 

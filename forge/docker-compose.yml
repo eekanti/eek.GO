@@ -12,6 +12,7 @@ services:
       - WEBHOOK_PATH=/webhook/coding-agent
       - PORT=3500
       - DB_PATH=/data/forge.db
+      - STITCH_API_KEY=AQ.Ab8RN6J-fWPsDQF7xhZs_YHu35MbGZnGBMzNHKxf1LdFzox-zA
     volumes:
       - forge-data:/data
     networks:

@@ -34,7 +34,7 @@ function StatItem({ label, value, sub }) {
   )
 }
 
-export default function StatsPanel({ projectId, isOpen, onClose }) {
+export default function StatsPanel({ projectId, isOpen, onClose, refreshTrigger }) {
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -46,7 +46,7 @@ export default function StatsPanel({ projectId, isOpen, onClose }) {
       .then(setStats)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [projectId, isOpen])
+  }, [projectId, isOpen, refreshTrigger])
 
   if (!isOpen) return null
 
@@ -106,7 +106,7 @@ export default function StatsPanel({ projectId, isOpen, onClose }) {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-foreground uppercase tracking-wider">Token Usage</span>
-              <span className="text-[10px] font-mono text-default-400">{(totalTokens / 1000).toFixed(1)}K total</span>
+              <span className="text-[10px] font-mono text-default-400">peak per call</span>
             </div>
             {phases.map((phase, i) => (
               <TokenBar key={i} {...phase} />

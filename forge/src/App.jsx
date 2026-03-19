@@ -11,6 +11,17 @@ function AppInner() {
     return saved !== null ? saved === 'true' : true // default dark
   })
   const [showStats, setShowStats] = useState(false)
+  const [statsRefresh, setStatsRefresh] = useState(0)
+
+  // Auto-refresh stats when pipeline completes
+  const wasRunning = useState(false)
+  useEffect(() => {
+    if (wasRunning[0] && !state.isRunning) {
+      // Pipeline just finished — refresh stats after a short delay for n8n to save
+      setTimeout(() => setStatsRefresh(n => n + 1), 2000)
+    }
+    wasRunning[0] = state.isRunning
+  }, [state.isRunning])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark)
@@ -86,6 +97,7 @@ function AppInner() {
         projectId={state.activeProject?.id}
         isOpen={showStats}
         onClose={() => setShowStats(false)}
+        refreshTrigger={statsRefresh}
       />
     </div>
   )
