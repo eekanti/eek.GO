@@ -12,6 +12,13 @@ const N8N_URL = process.env.N8N_URL || 'http://n8n:5678'
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook/coding-agent'
 const FILE_API_URL = process.env.FILE_API_URL || 'http://file-api:3456'
 const FILE_API_TOKEN = process.env.FILE_API_TOKEN || ''
+const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions'
+const LM_STUDIO_HOST = process.env.LM_STUDIO_HOST || 'http://10.0.0.100:1234'
+const LLM_API_KEY = process.env.LLM_API_KEY || ''
+const AGENT_MODEL = process.env.AGENT_MODEL || 'qwen/qwen3.5-9b'
+
+// Track active conversations (project_id → conversation state)
+const activeConversations = new Map()
 
 // Serve built React app
 app.use(express.static(path.join(__dirname, 'dist')))
@@ -196,25 +203,173 @@ app.get('/api/projects/:id/messages', (req, res) => {
   res.json({ messages: parsed })
 })
 
-// Send a chat message and trigger the pipeline
+// ─── Pre-planning conversation with LM Studio ─────────────────────────
+
+const CLARIFY_SYSTEM_PROMPT = `You are a pre-planning assistant for an AI coding pipeline. Your job is to review the user's build request and ask clarifying questions ONLY if critical information is missing.
+
+You should ask questions when:
+- The tech stack is ambiguous (e.g., "build a website" — React? Next.js? Plain HTML?)
+- Key features are vague (e.g., "add authentication" — OAuth? Email/password? Both?)
+- Design requirements are unclear and no reference image/URL was provided
+
+You should NOT ask questions when:
+- The request is clear and specific enough to plan tasks
+- The user provided reference images or URLs
+- The user said "feel free to ask questions" (they're being polite, not requesting interrogation)
+
+RESPONSE FORMAT:
+- If you have questions: respond with your questions as a numbered list. Be concise — max 3 questions.
+- If the request is clear enough: respond with EXACTLY the text "READY_TO_BUILD" (nothing else).
+- When the user answers your questions: if you have all you need, respond with "READY_TO_BUILD". If not, ask 1-2 more focused questions.
+
+Keep questions short and practical. Don't be overly cautious — a decent prompt with reference images is usually enough.`
+
+async function callLMStudio(messages, maxTokens = 2048) {
+  const res = await fetch(LM_STUDIO_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: AGENT_MODEL,
+      messages,
+      temperature: 0.6,
+      top_p: 0.85,
+      max_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(120000),
+  })
+  if (!res.ok) throw new Error(`LM Studio ${res.status}: ${await res.text()}`)
+  const data = await res.json()
+  const msg = data.choices?.[0]?.message || {}
+  let content = msg.content || msg.reasoning_content || ''
+  // Strip thinking blocks
+  content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  if (content.includes('</think>')) content = content.split('</think>').pop().trim()
+  return content
+}
+
+async function ensureAgentLoaded() {
+  try {
+    const res = await fetch(`${LM_STUDIO_HOST}/api/v1/models`)
+    const data = await res.json()
+    const loaded = (data.models || []).some(m => m.key === AGENT_MODEL && m.loaded_instances?.length > 0)
+    if (!loaded) {
+      await fetch(`${LM_STUDIO_HOST}/api/v1/models/load`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${LLM_API_KEY}` },
+        body: JSON.stringify({ model: AGENT_MODEL, context_length: 32768 }),
+      })
+    }
+  } catch (e) {
+    console.error('[planner load error]', e.message)
+  }
+}
+
+// Send a chat message — routes through pre-planning conversation or triggers pipeline
 app.post('/api/chat/send', async (req, res) => {
   const { project_id, content, images, reference_url } = req.body
   if (!project_id || !content) return res.status(400).json({ error: 'project_id and content required' })
 
-  // Ensure project exists
   ensureProject(project_id, project_id)
 
   // Save user message
   const metadata = JSON.stringify({ images: images || [], reference_url: reference_url || null })
-  const result = db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+  const msgResult = db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
     .run(project_id, 'user', content, images?.length ? 'image' : 'text', metadata)
-
   db.prepare('UPDATE projects SET updated_at = datetime(\'now\') WHERE id = ?').run(project_id)
 
-  // Trigger n8n webhook (fire-and-forget — status comes via callbacks)
-  // Abort after 10s — we don't need the response, all progress comes via SSE callbacks
+  // Return immediately — process async
+  res.json({ message_id: msgResult.lastInsertRowid })
+
+  // Check if we're in an active conversation or starting fresh
+  const conv = activeConversations.get(project_id)
+
+  if (conv) {
+    // Continuing Q&A — user answered a question
+    conv.history.push({ role: 'user', content })
+    try {
+      const reply = await callLMStudio(conv.history)
+
+      if (reply.trim() === 'READY_TO_BUILD' || reply.includes('READY_TO_BUILD')) {
+        // Agent satisfied — fire the pipeline with enriched context
+        activeConversations.delete(project_id)
+
+        // Build enriched prompt from conversation
+        const enrichedPrompt = conv.originalPrompt + '\n\nAdditional context from conversation:\n' +
+          conv.history.filter(m => m.role === 'user' && m.content !== conv.originalPrompt)
+            .map(m => '- ' + m.content).join('\n')
+
+        db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+          .run(project_id, 'status', '🚀 All questions answered — starting build pipeline...', 'status_update')
+        broadcast(project_id, 'pipeline_started', { message: '🚀 All questions answered — starting build pipeline...' })
+
+        triggerPipeline(project_id, enrichedPrompt, conv.images, conv.reference_url)
+      } else {
+        // More questions — save and broadcast
+        conv.history.push({ role: 'assistant', content: reply })
+        db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+          .run(project_id, 'assistant', reply, 'question', JSON.stringify({ phase: 'pre_planning' }))
+        broadcast(project_id, 'agent_question', { message: reply, timestamp: new Date().toISOString() })
+      }
+    } catch (e) {
+      console.error('[conversation error]', e.message)
+      // On error, just fire the pipeline with what we have
+      activeConversations.delete(project_id)
+      db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+        .run(project_id, 'status', '⚡ Starting pipeline...', 'status_update')
+      broadcast(project_id, 'pipeline_started', { message: '⚡ Starting pipeline...' })
+      triggerPipeline(project_id, content, images, reference_url)
+    }
+    return
+  }
+
+  // New prompt — start pre-planning conversation
+  try {
+    await ensureAgentLoaded()
+
+    const history = [
+      { role: 'system', content: CLARIFY_SYSTEM_PROMPT },
+      { role: 'user', content: content + (images?.length ? '\n\n[User attached reference images]' : '') + (reference_url ? `\n\n[Reference URL: ${reference_url}]` : '') }
+    ]
+
+    const reply = await callLMStudio(history)
+
+    if (reply.trim() === 'READY_TO_BUILD' || reply.includes('READY_TO_BUILD')) {
+      // No questions needed — fire pipeline immediately
+      db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+        .run(project_id, 'status', '⚡ Starting pipeline...', 'status_update')
+      broadcast(project_id, 'pipeline_started', { message: '⚡ Starting pipeline...' })
+      triggerPipeline(project_id, content, images, reference_url)
+    } else {
+      // Agent has questions — start conversation
+      history.push({ role: 'assistant', content: reply })
+      activeConversations.set(project_id, {
+        history,
+        originalPrompt: content,
+        images: images || [],
+        reference_url: reference_url || null,
+      })
+
+      db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
+        .run(project_id, 'assistant', reply, 'question', JSON.stringify({ phase: 'pre_planning' }))
+      broadcast(project_id, 'agent_question', { message: reply, timestamp: new Date().toISOString() })
+    }
+  } catch (e) {
+    console.error('[pre-planning error]', e.message)
+    // Fallback: skip conversation, fire pipeline directly
+    db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+      .run(project_id, 'status', '⚡ Starting pipeline...', 'status_update')
+    broadcast(project_id, 'pipeline_started', { message: '⚡ Starting pipeline...' })
+    triggerPipeline(project_id, content, images, reference_url)
+  }
+})
+
+// Helper: fire the n8n pipeline
+function triggerPipeline(project_id, message, images, reference_url) {
   const webhookBody = {
-    message: content,
+    message,
     project_id,
     reference_url: reference_url || undefined,
     image_data: images?.[0] || undefined,
@@ -232,16 +387,105 @@ app.post('/api/chat/send', async (req, res) => {
     .then(() => clearTimeout(abortTimer))
     .catch(e => {
       clearTimeout(abortTimer)
-      // Aborted = expected (webhook takes minutes), only log real connection errors
       if (e.name === 'AbortError') return
       console.error('[webhook error]', e.message)
       db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
         .run(project_id, 'status', `⚠️ Failed to reach pipeline: ${e.message}`, 'error')
       broadcast(project_id, 'pipeline_error', { error: e.message })
     })
+}
 
-  // Return immediately — don't wait for pipeline
-  res.json({ message_id: result.lastInsertRowid })
+// ─── Execution stats ───────────────────────────────────────────────────
+
+const N8N_API_KEY = process.env.N8N_API_KEY || ''
+
+app.get('/api/projects/:id/stats', async (req, res) => {
+  const { id } = req.params
+
+  // Get last pipeline_result message for this project
+  const resultMsg = db.prepare(
+    "SELECT metadata FROM messages WHERE project_id = ? AND message_type = 'pipeline_result' ORDER BY id DESC LIMIT 1"
+  ).get(id)
+
+  // Get message counts
+  const msgCounts = db.prepare(
+    "SELECT message_type, COUNT(*) as count FROM messages WHERE project_id = ? GROUP BY message_type"
+  ).all(id)
+
+  // Get last execution ID from n8n if available
+  let executionStats = null
+  if (N8N_API_KEY) {
+    try {
+      const N8N = process.env.N8N_URL || 'http://n8n:5678'
+      const listRes = await fetch(`${N8N}/api/v1/executions?workflowId=PNOMGkCjzFGxf52E&limit=5`, {
+        headers: { 'X-N8N-API-KEY': N8N_API_KEY }
+      })
+      if (listRes.ok) {
+        const list = await listRes.json()
+        const exec = (list.data || []).find(e => e.status === 'success')
+        if (exec) {
+          const dataRes = await fetch(`${N8N}/api/v1/executions/${exec.id}?includeData=true`, {
+            headers: { 'X-N8N-API-KEY': N8N_API_KEY }
+          })
+          if (dataRes.ok) {
+            const execData = await dataRes.json()
+            const rd = execData.data?.resultData?.runData || {}
+
+            // Extract model usage per phase
+            const phases = []
+            const phaseMap = [
+              ['Planner: Call LM Studio', 'Planner', '🗂️'],
+              ['CW: Call LM Studio', 'Coder', '✍️'],
+              ['P3: Review LLM', 'Reviewer', '✅'],
+              ['P4: Fix LLM', 'Fixer', '🔧'],
+              ['Final: Review LLM', 'Final Review', '📋'],
+            ]
+            for (const [node, label, icon] of phaseMap) {
+              const runs = rd[node] || []
+              if (runs.length > 0) {
+                let totalPrompt = 0, totalCompletion = 0, callCount = runs.length
+                for (const run of runs) {
+                  const out = run.data?.main?.[0]?.[0]
+                  if (out) {
+                    const u = out.json?.usage || {}
+                    totalPrompt += u.prompt_tokens || 0
+                    totalCompletion += u.completion_tokens || 0
+                  }
+                }
+                phases.push({ label, icon, calls: callCount, promptTokens: totalPrompt, completionTokens: totalCompletion, totalTokens: totalPrompt + totalCompletion })
+              }
+            }
+
+            // Research docs size
+            const bi = rd['P2: Build Code Input'] || []
+            const lastBi = bi[bi.length - 1]
+            const researchChars = lastBi?.data?.main?.[0]?.[0]?.json?.research_docs?.length || 0
+            const existingFiles = lastBi?.data?.main?.[0]?.[0]?.json?.existing_files?.length || 0
+
+            executionStats = {
+              executionId: exec.id,
+              status: exec.status,
+              startedAt: exec.startedAt,
+              stoppedAt: exec.stoppedAt,
+              durationSec: exec.stoppedAt ? Math.round((new Date(exec.stoppedAt) - new Date(exec.startedAt)) / 1000) : null,
+              phases,
+              researchChars,
+              existingFiles,
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  const result = resultMsg?.metadata ? JSON.parse(resultMsg.metadata) : null
+
+  res.json({
+    project_id: id,
+    lastResult: result,
+    messageCounts: Object.fromEntries(msgCounts.map(m => [m.message_type, m.count])),
+    execution: executionStats,
+  })
 })
 
 // ─── File-API proxy routes ─────────────────────────────────────────────

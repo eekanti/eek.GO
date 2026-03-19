@@ -54,7 +54,7 @@ export default function ChatInput({ onSend, disabled, prefill, onPrefillUsed }) 
   }
 
   return (
-    <div className="border-t border-default-200 bg-default-50/80 backdrop-blur-xl px-4 py-3">
+    <div className="border-t border-default-200 dark:border-zinc-800 bg-default-50/80 dark:bg-zinc-950/80 backdrop-blur-xl px-4 py-3">
       {/* Image previews */}
       {images.length > 0 && (
         <div className="flex gap-2 mb-2">
@@ -104,7 +104,7 @@ export default function ChatInput({ onSend, disabled, prefill, onPrefillUsed }) 
           maxRows={6}
           variant="bordered"
           classNames={{
-            inputWrapper: 'bg-white border-default-200 shadow-sm',
+            inputWrapper: 'bg-white dark:bg-zinc-800 border-default-200 dark:border-zinc-700 shadow-sm',
             input: 'text-sm',
           }}
         />

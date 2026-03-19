@@ -261,6 +261,29 @@ app.post('/scrape', async (req, res) => {
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT) || 4000;
 let activePreview = null; // { projectId, process, port }
 
+function killPreview() {
+  if (!activePreview?.process) return;
+  const pid = activePreview.process.pid;
+  try {
+    // Kill the entire process group (catches child processes like esbuild)
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    try { activePreview.process.kill('SIGTERM'); } catch {}
+  }
+  // Also force-kill anything on the preview port
+  try {
+    execSync(`kill $(lsof -ti:${PREVIEW_PORT}) 2>/dev/null || true`, { stdio: 'pipe', timeout: 5000 });
+  } catch {}
+  // Wait a moment then force kill if still alive
+  setTimeout(() => {
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+    try {
+      execSync(`kill -9 $(lsof -ti:${PREVIEW_PORT}) 2>/dev/null || true`, { stdio: 'pipe', timeout: 5000 });
+    } catch {}
+  }, 1000);
+  activePreview = null;
+}
+
 // POST /projects/:id/preview/start — npm install + dev server
 app.post('/projects/:id/preview/start', async (req, res) => {
   try {
@@ -270,11 +293,9 @@ app.post('/projects/:id/preview/start', async (req, res) => {
       return res.status(400).json({ error: 'No package.json — project cannot be built' });
     }
 
-    // Kill existing preview if running
-    if (activePreview?.process) {
-      try { activePreview.process.kill('SIGTERM'); } catch {}
-      activePreview = null;
-    }
+    // Kill existing preview — entire process tree
+    killPreview();
+    await new Promise(r => setTimeout(r, 1500)); // wait for port to free
 
     // npm install
     try {
@@ -291,9 +312,7 @@ app.post('/projects/:id/preview/start', async (req, res) => {
     const { spawn } = require('child_process');
     let cmd, args;
     if (scripts.dev) {
-      // Use npx to run whatever 'dev' script uses (vite, next, etc.)
       cmd = 'npx';
-      // Try vite first (most common), fall back to generic npm run dev
       if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'vite'))) {
         args = ['vite', '--host', '0.0.0.0', '--port', String(PREVIEW_PORT)];
       } else if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'next'))) {
@@ -310,6 +329,7 @@ app.post('/projects/:id/preview/start', async (req, res) => {
       cwd: base,
       env: { ...process.env, PORT: String(PREVIEW_PORT) },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true, // creates a process group so we can kill all children
     });
 
     let output = '';
@@ -355,8 +375,7 @@ app.post('/projects/:id/preview/stop', (req, res) => {
   if (!activePreview || activePreview.projectId !== req.params.id) {
     return res.json({ status: 'not_running' });
   }
-  try { activePreview.process.kill('SIGTERM'); } catch {}
-  activePreview = null;
+  killPreview();
   res.json({ status: 'stopped' });
 });
 

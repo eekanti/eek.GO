@@ -16,6 +16,9 @@ export default function useSSE(projectId) {
         const data = JSON.parse(e.data)
         const eventType = e.type
 
+        if (eventType === 'pipeline_started') {
+          dispatch({ type: 'SET_RUNNING', value: true })
+        }
         if (eventType === 'pipeline_complete' || eventType === 'pipeline_error') {
           dispatch({ type: 'SET_RUNNING', value: false })
         }
@@ -25,6 +28,7 @@ export default function useSSE(projectId) {
         let messageType = 'status_update'
         if (eventType === 'pipeline_complete') { role = 'assistant'; messageType = 'pipeline_result' }
         if (eventType === 'plan_approval') { role = 'assistant'; messageType = 'plan_approval' }
+        if (eventType === 'agent_question') { role = 'assistant'; messageType = 'question' }
 
         dispatch({
           type: 'ADD_MESSAGE',
@@ -40,7 +44,7 @@ export default function useSSE(projectId) {
       } catch {}
     }
 
-    const events = ['pipeline_started', 'planning_complete', 'plan_approval', 'plan_approved', 'research_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
+    const events = ['pipeline_started', 'planning_complete', 'plan_approval', 'plan_approved', 'agent_question', 'research_complete', 'task_written', 'review_complete', 'fix_applied', 'final_review_complete', 'pipeline_complete', 'pipeline_error']
     events.forEach(evt => es.addEventListener(evt, handleEvent))
 
     es.onerror = () => {

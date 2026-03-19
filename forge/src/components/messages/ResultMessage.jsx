@@ -42,24 +42,24 @@ function SuggestionList({ suggestions, onUseSuggestion }) {
           const isExpanded = expandedIdx === i
 
           return (
-            <div key={i} className="bg-primary-50 rounded-xl overflow-hidden border border-primary-100 transition-all">
+            <div key={i} className="bg-primary-50 dark:bg-zinc-800 rounded-xl overflow-hidden border border-primary-100 dark:border-zinc-700 transition-all">
               {/* Preview row — always visible */}
               <div
-                className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-primary-100 transition-colors"
+                className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-primary-100 dark:hover:bg-zinc-700 transition-colors"
                 onClick={() => setExpandedIdx(isExpanded ? null : i)}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  className={`text-primary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
+                  className={`text-primary dark:text-blue-400 shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
                   <path d="M9 18l6-6-6-6"/>
                 </svg>
-                <span className="text-sm font-medium text-primary-700 flex-1">{preview}</span>
+                <span className="text-sm font-medium text-primary-700 dark:text-blue-300 flex-1">{preview}</span>
               </div>
 
               {/* Expanded detail — shown on click */}
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-2">
-                  <div className="bg-white/60 rounded-lg px-3 py-2.5 border border-primary-100">
-                    <p className="text-xs text-default-600 leading-relaxed whitespace-pre-wrap">{detail}</p>
+                  <div className="bg-white/60 dark:bg-zinc-900/60 rounded-lg px-3 py-2.5 border border-primary-100 dark:border-zinc-600">
+                    <p className="text-xs text-default-600 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">{detail}</p>
                   </div>
                   <button
                     onClick={(e) => { e.stopPropagation(); onUseSuggestion?.(detail) }}
@@ -158,11 +158,11 @@ export default function ResultMessage({ message, onUseSuggestion }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] w-full">
-        <Card shadow="sm" className="border border-success-200 bg-success-50/50">
+        <Card shadow="sm" className="border border-success-200 dark:border-emerald-800/50 bg-success-50/50 dark:bg-emerald-950/30">
           <CardHeader className="flex items-center justify-between pb-2">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span className="text-xs font-semibold text-success-700 uppercase tracking-wider">Build Complete</span>
+              <span className="text-xs font-semibold text-success-700 dark:text-emerald-400 uppercase tracking-wider">Build Complete</span>
             </div>
             <div className="flex items-center gap-2">
               {data.tasks_completed != null && (
@@ -181,7 +181,7 @@ export default function ResultMessage({ message, onUseSuggestion }) {
           <Divider />
           <CardBody className="pt-3 space-y-3">
             {data.summary && (
-              <p className="text-sm text-default-700 leading-relaxed">{data.summary}</p>
+              <p className="text-sm text-default-700 dark:text-zinc-300 leading-relaxed">{data.summary}</p>
             )}
             {data.files_written?.length > 0 && (
               <div>

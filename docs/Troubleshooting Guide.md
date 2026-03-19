@@ -1,4 +1,4 @@
-# Troubleshooting Guide — eek-Go v2
+# Troubleshooting Guide — eek-Go v3
 
 ## LM Studio Connection
 
@@ -176,13 +176,48 @@ The `/scrape` endpoint uses Playwright + Chromium. If it fails:
 
 ---
 
+## v3 Multi-Model Issues
+
+### Wrong model loading
+
+After changing model keys in `workflows/.env`, you must recreate the n8n container (not just restart):
+```bash
+docker stop n8n && docker rm n8n && docker compose up -d
+```
+Verify: `docker exec n8n env | grep MODEL`
+
+### Model fails to load (VRAM)
+
+The VL-32B planner at 96K context may exceed 32GB VRAM via API (UI settings like KV cache quantization don't carry over to API loads). Reduce context to 32K in the workflow, or configure the model in LM Studio UI first with Flash Attention + KV Cache Q8_0 + "Remember settings."
+
+### Pre-planning agent loads wrong model
+
+Forge's agent uses `AGENT_MODEL` env var. If it loads the planner model instead, rebuild Forge: `cd forge && docker compose up -d --build`
+
+### Build & Preview shows old project
+
+The preview process cleanup now kills entire process groups (`kill -pid`). If still stuck, restart file-api: `cd file-api && docker compose restart`
+
+### Stats panel empty
+
+Stats fetch from n8n execution API. Need at least one successful execution for the selected project. Check that `N8N_API_KEY` is set in Forge's env.
+
+---
+
 ## Quick Checklist
 
 1. LM Studio running at `http://10.0.0.100:1234`?
-2. `workflows/.env` populated with all variables?
-3. n8n running? `docker ps | grep n8n`
+2. `workflows/.env` populated with all 9 model/service variables?
+3. n8n running with NEW env? `docker exec n8n env | grep PLANNER_MODEL`
 4. File-api running? `docker ps | grep file-api`
 5. Forge running? `docker ps | grep forge`
-6. All on `shared_net`? `docker network inspect shared_net | jq '.[0].Containers | keys'`
-7. Workflow activated in n8n? Check `http://localhost:5678`
-8. Models available in LM Studio? `qwen3.5-27b@q4_k_m` + `qwen/qwen3-30b-a3b-2507`
+6. Docky (MCP gateway) running? `docker ps | grep docky`
+7. All on `shared_net`? `docker network inspect shared_net | jq '.[0].Containers | keys'`
+8. Workflow activated in n8n? Check `http://localhost:5678`
+9. All 6 models downloaded in LM Studio?
+   - `qwen/qwen3.5-9b`
+   - `qwen/qwen3-vl-32b`
+   - `qwen/qwen3-coder-next`
+   - `deepseek-r1-distill-qwen-14b`
+   - `mistralai/devstral-small-2-2512`
+   - `mistralai/magistral-small-2509`
