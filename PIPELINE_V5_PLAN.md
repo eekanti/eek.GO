@@ -1,6 +1,7 @@
 # eek-Go Pipeline v5 Optimization Plan
 
 *Compiled 2026-03-20 based on execution data analysis, framework research, and web research.*
+*Updated with findings from MetaGPT, Aider, SWE-Agent, Cursor 2.0, PostHog, and academic papers.*
 
 ---
 
@@ -215,6 +216,46 @@ Skip: research, Stitch, playtest, reviewer, fixer, final review. The user provid
 - [ ] Consolidate callback nodes
 - [ ] Add planner `fast_mode` flag
 - [ ] Investigate parallel task execution (coder tasks 1 and 2 simultaneously if independent)
+
+---
+
+## Part 6: Research-Backed Insights
+
+### 6.1 Key Finding: The Multi-Agent Trap
+**Google DeepMind (Dec 2025):** Unstructured multi-agent networks amplify errors up to 17.2x. Coordination gains plateau beyond 4 agents.
+
+**Anthropic:** "We've seen teams invest months building elaborate multi-agent architectures only to discover that improved prompting on a single agent achieved equivalent results."
+
+**Impact on our pipeline:** We have 6 LLM roles (planner, coder, reviewer, fixer, final reviewer, agent). The data shows reviewer and fixer are broken — that's coordination failure. We should simplify to: Planner + Coder + 1 Review pass. The fixer role should merge INTO the review cycle (reviewer outputs fixes directly, not as a separate LLM call).
+
+### 6.2 Key Finding: Review Loop Math
+Review loops follow: `Acc_t = Upp - alpha^t * (Upp - Acc_0)`. Rounds 1-2 capture 75% of all improvement. Round 3 gets to 87.5%. Beyond 3, diminishing returns are severe. A single model reviewing itself has a ceiling of ~0.80 accuracy.
+
+**Cross-model review** catches 3-5x more bugs (we already do this — Qwen3.5-27B reviews, DeepSeek-R1-32B does final review).
+
+**Action:** Cap at 2 review rounds. Use build success + lint pass as the primary stop signal, not LLM self-assessment.
+
+### 6.3 Key Finding: Progressive Disclosure (Bread-Crumbing)
+**PostHog's biggest breakthrough:** "The early agent-driven runs were useless in how variable they were. Staging the context created something predictable." Instead of dumping the entire plan at once, reveal prompts in sequence — each stage loads the next.
+
+**Action:** Restructure the coder prompt. Currently we dump: system rules + research docs + reference images + task description + all files. The task description is buried at the bottom. Reverse this — task first, then supporting context.
+
+### 6.4 Key Finding: /no_think for Code Generation
+**NoWait research:** Suppressing reflection reduces CoT length by 13-31% with minimal accuracy impact on base models. Qwen3 supports `max_thinking_tokens` and `/no_think`.
+
+**Action:** Use `/no_think` for the coder (wants direct code output). Use thinking mode for the planner (benefits from reasoning). This saves 13-30% of coder tokens.
+
+### 6.5 Key Finding: Edit Format > Model Quality
+**The Harness Problem:** Changing ONLY the edit format improved one model from 6.7% to 68.3% — a 10x improvement with zero model changes.
+
+**Cursor's insight:** "Fully rewriting the full file outperforms aider-like diffs for files under 400 lines." Since most of our files are under 400 lines, our full-file approach is actually correct.
+
+**For fixes specifically:** Search/replace blocks are better than full rewrites when making targeted changes (the fixer's job). Aider-style with detailed error feedback is the best format for local LLMs.
+
+### 6.6 Key Finding: Small Edit Scopes
+**SWE-bench data:** Reference solutions average editing just 1.7 files, 3.0 functions, and 32.8 lines. The best results come from small, focused edits.
+
+**Action:** The planner should target 30-50 lines changed per task. For follow-up requests, 1 task touching 1-2 files is optimal.
 
 ---
 
