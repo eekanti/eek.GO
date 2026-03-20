@@ -257,6 +257,42 @@ Review loops follow: `Acc_t = Upp - alpha^t * (Upp - Acc_0)`. Rounds 1-2 capture
 
 **Action:** The planner should target 30-50 lines changed per task. For follow-up requests, 1 task touching 1-2 files is optimal.
 
+### 6.7 Key Finding: Framework Techniques Worth Stealing
+
+From studying MetaGPT, OpenHands, SWE-Agent, Aider, and Devon source code:
+
+| Technique | Source | Impact | Priority |
+|-----------|--------|--------|----------|
+| **LGTM/LBTM binary review** | MetaGPT | Replace complex JSON review with simple pass/fail + fix list | HIGH |
+| **Lint-after-edit auto-feedback** | Aider, Devon | Run syntax check after coder writes, feed errors back automatically | HIGH |
+| **System reminder every turn** | Aider | Re-send format rules with every message to prevent format drift | HIGH |
+| **Anti-overthinking prompt** | Devon | "Am I overthinking? Just make the fix." Directly applicable | MEDIUM |
+| **"Don't leave TODO" prompt** | MetaGPT | Explicit: write complete code, not stubs | MEDIUM |
+| **str_replace editing for fixer** | OpenHands, SWE-Agent | Prevents whole-file rewrites during fix phase | MEDIUM |
+| **Architect describes, coder implements** | Aider | We do this (planner/coder) but could separate more cleanly | LOW |
+| **Best-of-N with scoring** | SWE-Agent | Run coder N times, pick best. Expensive but effective for hard tasks | LOW |
+| **Submit-review gate** | SWE-Agent | Show agent its own diff before accepting | LOW |
+
+### 6.8 Specific Prompt Improvements to Implement
+
+**For the Coder (from Aider + MetaGPT):**
+- Add "Write out EVERY CODE DETAIL. Do NOT leave TODO comments." (MetaGPT)
+- Add "NEVER create multiple versions of the same file with different suffixes" (OpenHands)
+- Re-send format rules as a system reminder (Aider's technique)
+- Add "Make the MINIMUM changes needed to solve the problem" (OpenHands)
+
+**For the Reviewer (from MetaGPT + SWE-Agent):**
+- Use LGTM/LBTM binary verdict instead of 0-100 quality score
+- Structured checklist: 1) Does it build? 2) Does it match the request? 3) Are assets used? 4) Any import errors?
+- Max 3-5 fixes per review (not unlimited)
+- Show the reviewer its own diff (SWE-Agent submit-review gate)
+
+**For the Fixer (from Aider + Devon):**
+- Use search/replace blocks instead of full file replacement
+- Add "Am I overthinking? Just make the targeted fix." (Devon)
+- Auto-lint after fix, feed errors back (Aider)
+- "Choose the most general fix over a specific one" (Devon)
+
 ---
 
 ## Appendix: Execution Data Summary
