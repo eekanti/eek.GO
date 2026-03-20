@@ -55,12 +55,18 @@ app.get('/projects/:id/file', (req, res) => {
 // POST /projects/:id/file — write/create a file
 app.post('/projects/:id/file', (req, res) => {
   try {
-    const { path: filePath, content } = req.body;
+    const { path: filePath, content, encoding } = req.body;
     if (!filePath || content === undefined) return res.status(400).json({ error: 'path and content required' });
     const { full } = safePath(req.params.id, filePath);
     fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, content, 'utf8');
-    res.json({ success: true, path: filePath, bytes: Buffer.byteLength(content) });
+    if (encoding === 'base64') {
+      const buf = Buffer.from(content, 'base64');
+      fs.writeFileSync(full, buf);
+      res.json({ success: true, path: filePath, bytes: buf.length });
+    } else {
+      fs.writeFileSync(full, content, 'utf8');
+      res.json({ success: true, path: filePath, bytes: Buffer.byteLength(content) });
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -254,6 +260,22 @@ app.post('/scrape', async (req, res) => {
     res.status(500).json({ error: e.message });
   } finally {
     if (browser) await browser.close();
+  }
+});
+
+// ─── Reference images: list all images in references/ as base64 ─────────
+app.get('/projects/:id/references', (req, res) => {
+  try {
+    const projectDir = path.join(PROJECTS_ROOT, req.params.id, 'references');
+    if (!fs.existsSync(projectDir)) return res.json({ references: [] });
+    const files = fs.readdirSync(projectDir).filter(f => /\.(png|jpg|jpeg|gif|webp)$/i.test(f));
+    const references = files.map(f => ({
+      filename: f,
+      base64: fs.readFileSync(path.join(projectDir, f)).toString('base64'),
+    }));
+    res.json({ references });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

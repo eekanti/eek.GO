@@ -18,9 +18,12 @@ function chatReducer(state, action) {
       const msgs = action.messages || []
       const statusMsgs = msgs.filter(m => m.role === 'status' || m.message_type === 'pipeline_result')
       const lastStatus = statusMsgs[statusMsgs.length - 1]
-      const stillRunning = lastStatus?.metadata?.event
-        ? !['pipeline_complete', 'pipeline_error'].includes(lastStatus.metadata.event)
-        : false
+      let stillRunning = false
+      if (lastStatus?.metadata?.event && !['pipeline_complete', 'pipeline_error'].includes(lastStatus.metadata.event)) {
+        // Only consider it "running" if the last status was recent (within 15 minutes)
+        const statusAge = Date.now() - new Date(lastStatus.created_at).getTime()
+        stillRunning = statusAge < 15 * 60 * 1000
+      }
       return { ...state, activeProject: action.project, messages: msgs, isRunning: stillRunning }
     }
     case 'ADD_MESSAGE':

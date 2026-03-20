@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChatProvider, useChat } from './context/ChatContext.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import ChatView from './components/ChatView.jsx'
@@ -14,13 +14,13 @@ function AppInner() {
   const [statsRefresh, setStatsRefresh] = useState(0)
 
   // Auto-refresh stats when pipeline completes
-  const wasRunning = useState(false)
+  const wasRunning = useRef(false)
   useEffect(() => {
-    if (wasRunning[0] && !state.isRunning) {
+    if (wasRunning.current && !state.isRunning) {
       // Pipeline just finished — refresh stats after a short delay for n8n to save
       setTimeout(() => setStatsRefresh(n => n + 1), 2000)
     }
-    wasRunning[0] = state.isRunning
+    wasRunning.current = state.isRunning
   }, [state.isRunning])
 
   useEffect(() => {
@@ -43,6 +43,10 @@ function AppInner() {
       const r = await fetch(`/api/projects/${project.id}/messages?limit=100`)
       const data = await r.json()
       dispatch({ type: 'SET_PROJECT', project, messages: data.messages || [] })
+      // Check actual pipeline status from n8n (not just message history)
+      const statusRes = await fetch(`/api/pipeline-status/${project.id}`)
+      const status = await statusRes.json()
+      dispatch({ type: 'SET_RUNNING', value: status.running })
     } catch {
       dispatch({ type: 'SET_PROJECT', project, messages: [] })
     }

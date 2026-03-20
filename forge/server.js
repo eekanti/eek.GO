@@ -60,6 +60,9 @@ app.post('/api/status-callback', (req, res) => {
   // Ensure project exists (in case callback arrives before UI creates it)
   ensureProject(project_id, project_id)
 
+  // Skip pipeline_started from n8n — Forge already sends this before triggering the webhook
+  if (event === 'pipeline_started') return res.json({ ok: true, skipped: 'duplicate' })
+
   const statusMessages = {
     pipeline_started: '⚡ Starting pipeline...',
     planning_complete: `🗂️ Planned ${data?.task_count || 0} tasks`,
@@ -67,6 +70,7 @@ app.post('/api/status-callback', (req, res) => {
     review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
     research_complete: `📚 Fetched docs for ${(data?.libraries_fetched || []).join(', ') || 'libraries'} (${data?.doc_count || 0} docs)`,
     build_check_passed: `✅ Build check passed`,
+    playtest_complete: `🎮 Playtest complete — ${data?.screenshots || 0} screenshots, ${data?.observations || 0} observations`,
     build_check_failed: `❌ Build failed: ${data?.error || 'unknown'} (${data?.stage || 'build'})`,
     visual_review_complete: `👁️ Visual review: ${data?.visual_quality || '?'}/100 — ${data?.summary || 'done'}`,
     fix_applied: `🔧 Applied ${data?.fix_count || ''} fix${(data?.fix_count || 0) !== 1 ? 'es' : ''}: ${(data?.files_fixed || []).join(', ') || 'unknown files'}`,
@@ -101,6 +105,24 @@ app.post('/api/status-callback', (req, res) => {
   broadcast(project_id, event, { message: content, ...data, timestamp: new Date().toISOString() })
 
   res.json({ ok: true })
+})
+
+// ─── Pipeline status check (queries n8n for actual execution state) ────
+app.get('/api/pipeline-status/:projectId', async (req, res) => {
+  const { projectId } = req.params
+  try {
+    // Check if there's a running execution in n8n
+    const n8nRes = await fetch(
+      `${N8N_URL}/api/v1/executions?workflowId=PNOMGkCjzFGxf52E&status=running&limit=5`,
+      { headers: { 'X-N8N-API-KEY': process.env.N8N_API_KEY || '' }, signal: AbortSignal.timeout(5000) }
+    )
+    if (!n8nRes.ok) return res.json({ running: false, source: 'n8n_error' })
+    const data = await n8nRes.json()
+    const running = (data.data || []).length > 0
+    res.json({ running, executions: (data.data || []).length })
+  } catch {
+    res.json({ running: false, source: 'error' })
+  }
 })
 
 // ─── Project routes ────────────────────────────────────────────────────
@@ -208,24 +230,21 @@ app.get('/api/projects/:id/messages', (req, res) => {
 
 // ─── Pre-planning conversation with LM Studio ─────────────────────────
 
-const CLARIFY_SYSTEM_PROMPT = `You are a pre-planning assistant for an AI coding pipeline. Your job is to review the user's build request and ask clarifying questions ONLY if critical information is missing.
+const CLARIFY_SYSTEM_PROMPT = `You are a triage assistant for an AI coding pipeline. You decide whether to send the user's request to the build pipeline or ask ONE round of clarifying questions first.
 
-You should ask questions when:
-- The tech stack is ambiguous (e.g., "build a website" — React? Next.js? Plain HTML?)
-- Key features are vague (e.g., "add authentication" — OAuth? Email/password? Both?)
-- Design requirements are unclear and no reference image/URL was provided
+RULE 1 — BE DECISIVE. When in doubt, respond with "READY_TO_BUILD". The pipeline's planner is smarter than you and can handle ambiguity.
 
-You should NOT ask questions when:
-- The request is clear and specific enough to plan tasks
-- The user provided reference images or URLs
-- The user said "feel free to ask questions" (they're being polite, not requesting interrogation)
+RULE 2 — NEVER ask more than 3 questions. NEVER ask a second round. If the user already answered questions, respond with "READY_TO_BUILD".
+
+RULE 3 — Bug reports, error messages, and fix requests ALWAYS get "READY_TO_BUILD". The user is telling you what's wrong — pass it through. Do NOT ask them to describe the error they already described.
+
+RULE 4 — If the user provided reference images, URLs, or specific file names, respond with "READY_TO_BUILD".
+
+RULE 5 — Only ask questions for BRAND NEW projects where the tech stack is genuinely ambiguous (e.g., "build me a website" with zero other context).
 
 RESPONSE FORMAT:
-- If you have questions: respond with your questions as a numbered list. Be concise — max 3 questions.
-- If the request is clear enough: respond with EXACTLY the text "READY_TO_BUILD" (nothing else).
-- When the user answers your questions: if you have all you need, respond with "READY_TO_BUILD". If not, ask 1-2 more focused questions.
-
-Keep questions short and practical. Don't be overly cautious — a decent prompt with reference images is usually enough.`
+- Almost always: respond with EXACTLY "READY_TO_BUILD" (nothing else)
+- Rare exception: 1-3 SHORT questions as a numbered list, ONLY for new projects with genuinely missing critical info`
 
 async function callLMStudio(messages, maxTokens = 2048) {
   const res = await fetch(LM_STUDIO_URL, {
@@ -262,7 +281,7 @@ async function ensureAgentLoaded() {
       await fetch(`${LM_STUDIO_HOST}/api/v1/models/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${LLM_API_KEY}` },
-        body: JSON.stringify({ model: AGENT_MODEL, context_length: 32768 }),
+        body: JSON.stringify({ model: AGENT_MODEL, context_length: 131072 }),
       })
     }
   } catch (e) {
@@ -290,50 +309,56 @@ app.post('/api/chat/send', async (req, res) => {
   const conv = activeConversations.get(project_id)
 
   if (conv) {
-    // Continuing Q&A — user answered a question
+    // User answered questions — always send to pipeline now (max 1 round of Q&A)
     conv.history.push({ role: 'user', content })
-    try {
-      const reply = await callLMStudio(conv.history)
 
-      if (reply.trim() === 'READY_TO_BUILD' || reply.includes('READY_TO_BUILD')) {
-        // Agent satisfied — fire the pipeline with enriched context
-        activeConversations.delete(project_id)
+    // Build enriched prompt from conversation
+    const enrichedPrompt = conv.originalPrompt + '\n\nAdditional context from conversation:\n' +
+      conv.history.filter(m => m.role === 'user' && m.content !== conv.originalPrompt)
+        .map(m => '- ' + m.content).join('\n')
 
-        // Build enriched prompt from conversation
-        const enrichedPrompt = conv.originalPrompt + '\n\nAdditional context from conversation:\n' +
-          conv.history.filter(m => m.role === 'user' && m.content !== conv.originalPrompt)
-            .map(m => '- ' + m.content).join('\n')
-
-        db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
-          .run(project_id, 'status', '🚀 All questions answered — starting build pipeline...', 'status_update')
-        broadcast(project_id, 'pipeline_started', { message: '🚀 All questions answered — starting build pipeline...' })
-
-        triggerPipeline(project_id, enrichedPrompt, conv.images, conv.reference_url)
-      } else {
-        // More questions — save and broadcast
-        conv.history.push({ role: 'assistant', content: reply })
-        db.prepare('INSERT INTO messages (project_id, role, content, message_type, metadata) VALUES (?, ?, ?, ?, ?)')
-          .run(project_id, 'assistant', reply, 'question', JSON.stringify({ phase: 'pre_planning' }))
-        broadcast(project_id, 'agent_question', { message: reply, timestamp: new Date().toISOString() })
-      }
-    } catch (e) {
-      console.error('[conversation error]', e.message)
-      // On error, just fire the pipeline with what we have
-      activeConversations.delete(project_id)
-      db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
-        .run(project_id, 'status', '⚡ Starting pipeline...', 'status_update')
-      broadcast(project_id, 'pipeline_started', { message: '⚡ Starting pipeline...' })
-      triggerPipeline(project_id, content, images, reference_url)
-    }
+    activeConversations.delete(project_id)
+    db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
+      .run(project_id, 'status', '🚀 Starting build pipeline...', 'status_update')
+    broadcast(project_id, 'pipeline_started', { message: '🚀 Starting build pipeline...' })
+    triggerPipeline(project_id, enrichedPrompt, conv.images, conv.reference_url)
     return
   }
+
 
   // New prompt — start pre-planning conversation
   try {
     await ensureAgentLoaded()
 
+    // Build history with full project context so the agent understands the ongoing project
+    const priorMessages = db.prepare(
+      'SELECT role, content, message_type, metadata FROM messages WHERE project_id = ? ORDER BY id ASC LIMIT 200'
+    ).all(project_id)
+
+    // Summarize project history into the system prompt
+    let projectContext = ''
+    if (priorMessages.length > 0) {
+      const chatHistory = priorMessages
+        .filter(m => m.role === 'user' || m.role === 'assistant' || (m.role === 'status' && m.message_type === 'pipeline_result'))
+        .map(m => {
+          if (m.role === 'user') {
+            const meta = m.metadata ? JSON.parse(m.metadata) : {}
+            const extras = []
+            if (meta.images?.length) extras.push('[attached images]')
+            if (meta.reference_url) extras.push(`[ref: ${meta.reference_url}]`)
+            return `USER: ${m.content}${extras.length ? ' ' + extras.join(' ') : ''}`
+          }
+          if (m.message_type === 'pipeline_result') {
+            const meta = m.metadata ? JSON.parse(m.metadata) : {}
+            return `PIPELINE RESULT: ${meta.tasks_completed || 0} tasks, ${meta.files_written?.length || 0} files written. ${m.content}`
+          }
+          return `ASSISTANT: ${m.content}`
+        })
+      projectContext = `\n\nPROJECT HISTORY (this is an ongoing project — the user has already been working on this):\n${chatHistory.join('\n')}`
+    }
+
     const history = [
-      { role: 'system', content: CLARIFY_SYSTEM_PROMPT },
+      { role: 'system', content: CLARIFY_SYSTEM_PROMPT + projectContext },
       { role: 'user', content: content + (images?.length ? '\n\n[User attached reference images]' : '') + (reference_url ? `\n\n[Reference URL: ${reference_url}]` : '') }
     ]
 
@@ -437,10 +462,36 @@ async function generateConceptUI(prompt, project_id) {
   }
 }
 
+// Helper: save a reference image to the project's references/ folder via file-api
+async function saveReferenceImage(project_id, base64Data, filename) {
+  try {
+    const res = await fetch(`${FILE_API_URL}/projects/${project_id}/file`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${FILE_API_TOKEN}` },
+      body: JSON.stringify({ path: `references/${filename}`, content: base64Data, encoding: 'base64' }),
+      signal: AbortSignal.timeout(15000),
+    })
+    if (res.ok) console.log(`[ref] Saved references/${filename} for ${project_id}`)
+    else console.error(`[ref] Failed to save ${filename}: ${res.status}`)
+  } catch (e) {
+    console.error(`[ref] Error saving ${filename}:`, e.message)
+  }
+}
+
+// Generate a descriptive filename from a user message
+function slugifyForFilename(message, prefix = 'reference') {
+  const words = message.replace(/[^a-zA-Z0-9\s]/g, '').trim().split(/\s+/).slice(0, 5)
+  const slug = words.join('_').toLowerCase().substring(0, 40)
+  return slug ? `${slug}.png` : `${prefix}_${Date.now()}.png`
+}
+
 // Helper: fire the n8n pipeline (with optional Stitch concept generation)
 async function triggerPipeline(project_id, message, images, reference_url) {
-  // Generate concept UI with Stitch if no reference image provided
-  if (!images?.length && !reference_url && STITCH_API_KEY) {
+  // Generate concept UI with Stitch only for brand-new projects with no prior images
+  const hasExistingImage = db.prepare(
+    "SELECT 1 FROM messages WHERE project_id = ? AND (message_type = 'image' OR content LIKE '%concept UI generated%') LIMIT 1"
+  ).get(project_id)
+  if (!images?.length && !reference_url && !hasExistingImage && STITCH_API_KEY) {
     broadcast(project_id, 'stitch_generating', { message: '🎨 Generating concept UI with Stitch...' })
     db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
       .run(project_id, 'status', '🎨 Generating concept UI with Stitch...', 'status_update')
@@ -448,11 +499,21 @@ async function triggerPipeline(project_id, message, images, reference_url) {
     const conceptImage = await generateConceptUI(message, project_id)
     if (conceptImage) {
       images = [conceptImage]
-      broadcast(project_id, 'stitch_complete', { message: '🎨 Concept UI generated — using as reference' })
+      await saveReferenceImage(project_id, conceptImage, 'stitch_concept.png')
+      broadcast(project_id, 'stitch_complete', { message: '🎨 Concept UI generated — saved as references/stitch_concept.png' })
       db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
-        .run(project_id, 'status', '🎨 Concept UI generated — using as reference', 'status_update')
+        .run(project_id, 'status', '🎨 Concept UI generated — saved as references/stitch_concept.png', 'status_update')
+    }
+  } else if (images?.length) {
+    // Save user-uploaded images to project references/ folder
+    for (let i = 0; i < images.length; i++) {
+      const filename = images.length === 1
+        ? slugifyForFilename(message)
+        : slugifyForFilename(message).replace('.png', `_${i + 1}.png`)
+      await saveReferenceImage(project_id, images[i], filename)
     }
   }
+
   const webhookBody = {
     message,
     project_id,
