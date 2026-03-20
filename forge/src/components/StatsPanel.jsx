@@ -38,9 +38,11 @@ export default function StatsPanel({ projectId, isOpen, onClose, refreshTrigger 
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(false)
 
+  // Always fetch on refreshTrigger (pipeline complete) — cache for when panel opens
   useEffect(() => {
-    if (!projectId || !isOpen) return
-    setLoading(true)
+    if (!projectId) return
+    if (!isOpen && refreshTrigger === 0) return // skip initial load if closed
+    setLoading(isOpen) // only show spinner if panel is visible
     fetch(`/api/projects/${projectId}/stats`)
       .then(r => r.json())
       .then(setStats)
