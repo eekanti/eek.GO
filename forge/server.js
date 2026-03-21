@@ -77,6 +77,7 @@ app.post('/api/status-callback', (req, res) => {
     plan_approval: `📋 Plan ready for review (${data?.task_count || 0} tasks, ${data?.total_files || 0} files)`,
     plan_approved: `✅ Plan ${data?.action === 'edit' ? 'approved with edits' : 'approved'} — continuing...`,
     final_review_complete: `📋 Final review: ${data?.quality || '?'}/100`,
+    pipeline_report: data?.report || '📊 Pipeline report generated',
     pipeline_complete: `🎉 Pipeline finished! ${data?.tasks_completed || 0} tasks, ${data?.files_written?.length || 0} files`,
     pipeline_error: `⚠️ Error: ${data?.error || 'unknown'}`
   }
@@ -491,7 +492,19 @@ async function triggerPipeline(project_id, message, images, reference_url) {
   const hasExistingImage = db.prepare(
     "SELECT 1 FROM messages WHERE project_id = ? AND (message_type = 'image' OR content LIKE '%concept UI generated%') LIMIT 1"
   ).get(project_id)
-  if (!images?.length && !reference_url && !hasExistingImage && STITCH_API_KEY) {
+  // Also check if project has reference images on disk
+  let hasReferenceFiles = false
+  try {
+    const refRes = await fetch(`${FILE_API_URL}/projects/${project_id}/references`, {
+      headers: { 'Authorization': `Bearer ${FILE_API_TOKEN}` },
+      signal: AbortSignal.timeout(5000)
+    })
+    if (refRes.ok) {
+      const refData = await refRes.json()
+      hasReferenceFiles = (refData.references || []).length > 0
+    }
+  } catch {}
+  if (!images?.length && !reference_url && !hasExistingImage && !hasReferenceFiles && STITCH_API_KEY) {
     broadcast(project_id, 'stitch_generating', { message: '🎨 Generating concept UI with Stitch...' })
     db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
       .run(project_id, 'status', '🎨 Generating concept UI with Stitch...', 'status_update')
