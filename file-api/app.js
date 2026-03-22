@@ -308,6 +308,400 @@ app.post('/projects/:id/build-check', (req, res) => {
   }
 });
 
+// ─── Console check: start dev server, capture browser console errors ────
+const CONSOLE_CHECK_PORT = 4001; // separate port so it doesn't conflict with user preview
+
+app.post('/projects/:id/console-check', async (req, res) => {
+  const { base } = safePath(req.params.id);
+  if (!fs.existsSync(base)) return res.status(404).json({ success: false, error: 'Project not found' });
+  if (!fs.existsSync(path.join(base, 'package.json'))) {
+    return res.json({ success: false, error: 'No package.json', errors: [], warnings: [] });
+  }
+
+  const { spawn } = require('child_process');
+  let devProcess = null;
+  let browser = null;
+
+  try {
+    // Kill anything on the console check port
+    try { execSync(`kill $(lsof -ti:${CONSOLE_CHECK_PORT}) 2>/dev/null || true`, { stdio: 'pipe', timeout: 3000 }); } catch {}
+    await new Promise(r => setTimeout(r, 500));
+
+    // Start dev server (npm install already done by build-check)
+    const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json'), 'utf8'));
+    if (!pkg.scripts?.dev) {
+      return res.json({ success: false, error: 'No dev script', errors: [], warnings: [] });
+    }
+
+    let cmd = 'npx', args;
+    if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'vite'))) {
+      args = ['vite', '--host', '0.0.0.0', '--port', String(CONSOLE_CHECK_PORT)];
+    } else if (fs.existsSync(path.join(base, 'node_modules', '.bin', 'next'))) {
+      args = ['next', 'dev', '-H', '0.0.0.0', '-p', String(CONSOLE_CHECK_PORT)];
+    } else {
+      cmd = 'npm'; args = ['run', 'dev'];
+    }
+
+    devProcess = spawn(cmd, args, {
+      cwd: base,
+      env: { ...process.env, PORT: String(CONSOLE_CHECK_PORT) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+
+    // Wait for server ready (poll up to 15s)
+    let ready = false;
+    const http = require('http');
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        await new Promise((resolve, reject) => {
+          const req = http.get(`http://localhost:${CONSOLE_CHECK_PORT}`, r => { r.resume(); resolve(); });
+          req.on('error', reject);
+          req.setTimeout(1000, () => { req.destroy(); reject(); });
+        });
+        ready = true;
+        break;
+      } catch {}
+    }
+
+    if (!ready) {
+      return res.json({ success: false, error: 'Dev server failed to start', errors: [], warnings: [] });
+    }
+
+    // Launch Playwright and capture console
+    const { chromium } = require('playwright');
+    browser = await chromium.launch({
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+
+    const errors = [];
+    const warnings = [];
+    let pageError = null;
+
+    // Attach listeners BEFORE navigation
+    page.on('console', msg => {
+      const type = msg.type();
+      const text = msg.text().substring(0, 500);
+      if (type === 'error') errors.push({ type: 'error', message: text });
+      else if (type === 'warning') warnings.push({ type: 'warning', message: text });
+    });
+
+    page.on('pageerror', error => {
+      pageError = pageError || error.message.substring(0, 500);
+      errors.push({ type: 'uncaught', message: error.message.substring(0, 500) });
+    });
+
+    // Navigate and wait for page to hydrate
+    await page.goto(`http://localhost:${CONSOLE_CHECK_PORT}`, { waitUntil: 'networkidle', timeout: 20000 });
+    await page.waitForTimeout(4000); // let React effects + animations run
+
+    // Take screenshot for visual review — full page to catch below-fold issues
+    const screenshotBuf = await page.screenshot({ fullPage: true, type: 'png' });
+    const screenshot_b64 = screenshotBuf.toString('base64');
+
+    // DOM visibility audit — check if elements are stuck at opacity: 0
+    const visibilityAudit = await page.evaluate(() => {
+      const selectors = ['section', 'main > div', '[class*="card"]', '[class*="badge"]', '[class*="step"]', '[class*="timeline"]', '[class*="feature"]', '[class*="hero"]', '[class*="cta"]'];
+      const invisible = [];
+      const total = { sections: 0, visible: 0, hidden: 0 };
+
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          const opacity = parseFloat(style.opacity);
+          const isHidden = opacity < 0.1 || rect.height < 5 || style.display === 'none' || style.visibility === 'hidden';
+
+          total.sections++;
+          if (isHidden && rect.height > 0) {
+            total.hidden++;
+            const id = el.id || el.className?.toString().substring(0, 40) || el.tagName;
+            invisible.push({ selector: id, opacity: opacity.toFixed(2), height: Math.round(rect.height) });
+          } else {
+            total.visible++;
+          }
+        }
+      }
+
+      return { invisible: invisible.slice(0, 15), total };
+    });
+
+    // ── AUDIT: Broken links ──
+    const linkAudit = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      const broken = [];
+      for (const a of links) {
+        const href = a.getAttribute('href') || '';
+        if (href.startsWith('#')) {
+          const target = document.querySelector(href);
+          if (!target) broken.push({ href, reason: 'anchor target not found' });
+        }
+      }
+      return { total: links.length, broken };
+    });
+
+    // ── AUDIT: Broken images ──
+    const imageAudit = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('img'));
+      const broken = [];
+      for (const img of imgs) {
+        if (!img.complete || img.naturalWidth === 0) {
+          broken.push({ src: img.src || img.getAttribute('src') || '?', alt: img.alt || '' });
+        }
+      }
+      return { total: imgs.length, broken };
+    });
+
+    // ── AUDIT: Color contrast (simplified WCAG check) ──
+    const contrastAudit = await page.evaluate(() => {
+      function luminance(r, g, b) {
+        const a = [r, g, b].map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+        return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+      }
+      function parseColor(str) {
+        const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : null;
+      }
+      const failures = [];
+      const textEls = document.querySelectorAll('h1, h2, h3, h4, p, span, a, button, li');
+      for (const el of Array.from(textEls).slice(0, 50)) {
+        const style = window.getComputedStyle(el);
+        const fg = parseColor(style.color);
+        const bg = parseColor(style.backgroundColor);
+        if (fg && bg && parseFloat(style.opacity) > 0.5) {
+          const l1 = luminance(...fg);
+          const l2 = luminance(...bg);
+          const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+          if (ratio < 3.0) {
+            const text = (el.textContent || '').substring(0, 30).trim();
+            if (text) failures.push({ element: el.tagName + (el.className ? '.' + el.className.toString().split(' ')[0] : ''), ratio: ratio.toFixed(1), text });
+          }
+        }
+      }
+      return { checked: Math.min(textEls.length, 50), failures: failures.slice(0, 5) };
+    });
+
+    // ── AUDIT: Interactive elements blocked by overlays ──
+    const interactiveAudit = await page.evaluate(() => {
+      const blocked = [];
+      const clickables = document.querySelectorAll('a, button, [role="button"]');
+      for (const el of Array.from(clickables).slice(0, 30)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) continue;
+        const topEl = document.elementFromPoint(cx, cy);
+        if (topEl && topEl !== el && !el.contains(topEl) && !topEl.closest('a, button, [role="button"]')) {
+          blocked.push({ element: el.tagName + ' "' + (el.textContent || '').substring(0, 20).trim() + '"', blockedBy: topEl.tagName + (topEl.className ? '.' + topEl.className.toString().split(' ')[0] : '') });
+        }
+      }
+      return { checked: Math.min(clickables.length, 30), blocked: blocked.slice(0, 5) };
+    });
+
+    // ── AUDIT: Content area coverage (vertical range dedup) ──
+    const contentAudit = await page.evaluate(() => {
+      const totalHeight = document.body.scrollHeight;
+      const scrollY = window.scrollY;
+      const ranges = [];
+
+      const els = document.querySelectorAll('h1, h2, h3, h4, p, span, a, button, li, img, svg, div');
+      for (const el of Array.from(els).slice(0, 200)) {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        const absTop = rect.top + scrollY;
+        const absBottom = absTop + rect.height;
+        if (parseFloat(style.opacity) > 0.3 && rect.height > 8 && rect.height < 600 && rect.width > 20) {
+          ranges.push([Math.round(absTop), Math.round(absBottom)]);
+        }
+      }
+
+      // Merge overlapping ranges
+      ranges.sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const [start, end] of ranges) {
+        if (merged.length > 0 && start <= merged[merged.length - 1][1]) {
+          merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], end);
+        } else {
+          merged.push([start, end]);
+        }
+      }
+
+      const visibleContentHeight = merged.reduce((sum, [s, e]) => sum + (e - s), 0);
+      const coverage = totalHeight > 0 ? Math.round((visibleContentHeight / totalHeight) * 100) : 0;
+      return { totalHeight, visibleContentHeight, coveragePercent: Math.min(coverage, 100) };
+    });
+
+    // ── AUDIT: Responsive layout (check for horizontal overflow at mobile) ──
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.waitForTimeout(500);
+    const responsiveAudit = await page.evaluate(() => {
+      const hasOverflow = document.body.scrollWidth > window.innerWidth;
+      const overflowElements = [];
+      if (hasOverflow) {
+        document.querySelectorAll('*').forEach(el => {
+          const rect = el.getBoundingClientRect();
+          if (rect.right > window.innerWidth + 5) {
+            overflowElements.push(el.tagName + (el.className ? '.' + el.className.toString().split(' ')[0] : ''));
+          }
+        });
+      }
+      return { mobileWidth: 375, hasOverflow, overflowElements: [...new Set(overflowElements)].slice(0, 5) };
+    });
+    await page.setViewportSize({ width: 1280, height: 800 }); // restore
+
+    // ── AUDIT: Missing alt text on images ──
+    const altTextAudit = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('img'));
+      const missing = imgs.filter(img => !img.alt || img.alt.trim() === '').map(img => img.src || '?');
+      return { total: imgs.length, missingAlt: missing.slice(0, 5) };
+    });
+
+    // ── AUDIT: Empty sections (heading with no content children) ──
+    const emptySectionAudit = await page.evaluate(() => {
+      const empty = [];
+      document.querySelectorAll('section').forEach(sec => {
+        const heading = sec.querySelector('h1, h2, h3');
+        if (heading) {
+          const visibleChildren = Array.from(sec.querySelectorAll('div, p, a, img, ul, li')).filter(el => {
+            const style = window.getComputedStyle(el);
+            return parseFloat(style.opacity) > 0.3 && el.getBoundingClientRect().height > 10 && el.textContent?.trim();
+          });
+          if (visibleChildren.length < 3) {
+            empty.push({ heading: heading.textContent?.trim().substring(0, 40) || '?', visibleCount: visibleChildren.length });
+          }
+        }
+      });
+      return { empty };
+    });
+
+    // ── AUDIT: Performance markers ──
+    const perfAudit = await page.evaluate(() => {
+      const perf = performance.getEntriesByType('navigation')[0];
+      return {
+        domContentLoaded: perf ? Math.round(perf.domContentLoadedEventEnd) : null,
+        loadComplete: perf ? Math.round(perf.loadEventEnd) : null,
+        domElements: document.querySelectorAll('*').length,
+      };
+    });
+
+    await browser.close();
+    browser = null;
+
+    // ── Compile all audit errors ──
+    const auditErrors = [];
+
+    // Visibility
+    if (visibilityAudit.total.hidden > 3) {
+      auditErrors.push({
+        type: 'visibility',
+        message: `${visibilityAudit.total.hidden} of ${visibilityAudit.total.sections} elements are invisible (opacity < 0.1). Elements stuck at opacity 0: ${visibilityAudit.invisible.slice(0, 5).map(e => e.selector).join(', ')}`
+      });
+    }
+
+    // Broken links
+    if (linkAudit.broken.length > 0) {
+      auditErrors.push({
+        type: 'broken_links',
+        message: `${linkAudit.broken.length} broken links: ${linkAudit.broken.slice(0, 3).map(l => l.href + ' (' + l.reason + ')').join(', ')}`
+      });
+    }
+
+    // Broken images
+    if (imageAudit.broken.length > 0) {
+      auditErrors.push({
+        type: 'broken_images',
+        message: `${imageAudit.broken.length} broken images: ${imageAudit.broken.slice(0, 3).map(i => i.src).join(', ')}`
+      });
+    }
+
+    // Contrast failures
+    if (contrastAudit.failures.length > 0) {
+      warnings.push({
+        type: 'contrast',
+        message: `${contrastAudit.failures.length} elements fail WCAG contrast: ${contrastAudit.failures.slice(0, 3).map(f => f.element + ' ratio=' + f.ratio).join(', ')}`
+      });
+    }
+
+    // Blocked interactive elements
+    if (interactiveAudit.blocked.length > 0) {
+      auditErrors.push({
+        type: 'blocked_elements',
+        message: `${interactiveAudit.blocked.length} clickable elements blocked by overlays: ${interactiveAudit.blocked.slice(0, 3).map(b => b.element + ' blocked by ' + b.blockedBy).join(', ')}`
+      });
+    }
+
+    // Low content coverage
+    if (contentAudit.coveragePercent < 15) {
+      auditErrors.push({
+        type: 'low_content',
+        message: `Only ${contentAudit.coveragePercent}% of page height has visible content (${contentAudit.visibleContentHeight}px of ${contentAudit.totalHeight}px). Most sections appear empty.`
+      });
+    }
+
+    // Mobile overflow
+    if (responsiveAudit.hasOverflow) {
+      warnings.push({
+        type: 'responsive',
+        message: `Horizontal overflow at 375px mobile width. Overflowing: ${responsiveAudit.overflowElements.join(', ')}`
+      });
+    }
+
+    // Missing alt text
+    if (altTextAudit.missingAlt.length > 0) {
+      warnings.push({
+        type: 'accessibility',
+        message: `${altTextAudit.missingAlt.length} images missing alt text`
+      });
+    }
+
+    // Empty sections
+    if (emptySectionAudit.empty.length > 0) {
+      for (const sec of emptySectionAudit.empty) {
+        auditErrors.push({
+          type: 'empty_section',
+          message: `Section "${sec.heading}" has heading but only ${sec.visibleCount} visible content elements — appears empty`
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      screenshot_b64,
+      errors: [...errors, ...auditErrors].slice(0, 20),
+      warnings: warnings.slice(0, 15),
+      page_error: pageError,
+      error_count: errors.length + auditErrors.length,
+      warning_count: warnings.length,
+      audits: {
+        visibility: visibilityAudit,
+        links: linkAudit,
+        images: imageAudit,
+        contrast: contrastAudit,
+        interactive: interactiveAudit,
+        content: contentAudit,
+        responsive: responsiveAudit,
+        altText: altTextAudit,
+        emptySections: emptySectionAudit,
+        performance: perfAudit,
+      },
+    });
+  } catch (e) {
+    res.json({ success: false, error: e.message, errors: [], warnings: [] });
+  } finally {
+    if (browser) try { await browser.close(); } catch {}
+    if (devProcess) {
+      try { process.kill(-devProcess.pid, 'SIGTERM'); } catch {}
+      try { execSync(`kill $(lsof -ti:${CONSOLE_CHECK_PORT}) 2>/dev/null || true`, { stdio: 'pipe', timeout: 3000 }); } catch {}
+    }
+  }
+});
+
 // ─── Preview: build & run projects ─────────────────────────────────────
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT) || 4000;
 let activePreview = null; // { projectId, process, port }

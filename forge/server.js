@@ -247,7 +247,7 @@ RESPONSE FORMAT:
 - Almost always: respond with EXACTLY "READY_TO_BUILD" (nothing else)
 - Rare exception: 1-3 SHORT questions as a numbered list, ONLY for new projects with genuinely missing critical info`
 
-async function callLMStudio(messages, maxTokens = 2048) {
+async function callLMStudio(messages, maxTokens = 131072) {
   const res = await fetch(LM_STUDIO_URL, {
     method: 'POST',
     headers: {
@@ -440,7 +440,7 @@ async function generateConceptUI(prompt, project_id) {
           }
         }
       }),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(120000),
     })
     const genData = await genRes.json()
     const genText = genData.result?.content?.[0]?.text || ''
@@ -504,7 +504,19 @@ async function triggerPipeline(project_id, message, images, reference_url) {
       hasReferenceFiles = (refData.references || []).length > 0
     }
   } catch {}
-  if (!images?.length && !reference_url && !hasExistingImage && !hasReferenceFiles && STITCH_API_KEY) {
+  // Check if project already has code files (skip Stitch for existing projects / bug fixes)
+  let hasCodeFiles = false
+  try {
+    const filesRes = await fetch(`${FILE_API_URL}/projects/${project_id}/files`, {
+      headers: { 'Authorization': `Bearer ${FILE_API_TOKEN}` },
+      signal: AbortSignal.timeout(5000)
+    })
+    if (filesRes.ok) {
+      const filesData = await filesRes.json()
+      hasCodeFiles = (filesData.files || []).some(f => /\.(jsx?|tsx?|css|html)$/.test(typeof f === 'string' ? f : f.path))
+    }
+  } catch {}
+  if (!images?.length && !reference_url && !hasExistingImage && !hasReferenceFiles && !hasCodeFiles && STITCH_API_KEY) {
     broadcast(project_id, 'stitch_generating', { message: '🎨 Generating concept UI with Stitch...' })
     db.prepare('INSERT INTO messages (project_id, role, content, message_type) VALUES (?, ?, ?, ?)')
       .run(project_id, 'status', '🎨 Generating concept UI with Stitch...', 'status_update')
