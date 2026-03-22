@@ -62,7 +62,7 @@ export default function Sidebar({ projects, activeId, onSelect, onCreate, onDele
           <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center text-white">
             <ForgeIcon size={18} />
           </div>
-          <span className="font-semibold text-foreground tracking-tight text-[15px]">eek-Forge</span>
+          <span className="font-semibold text-foreground tracking-tight text-[15px]">eek.FORGE</span>
         </div>
         <Button isIconOnly size="sm" variant="light" onPress={() => setCollapsed(true)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -146,7 +146,7 @@ export default function Sidebar({ projects, activeId, onSelect, onCreate, onDele
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-default-200 flex items-center justify-between">
-        <p className="text-[10px] text-default-300 font-mono">eek-Forge</p>
+        <p className="text-[10px] text-default-300 font-mono">eek.FORGE</p>
         <Button isIconOnly size="sm" variant="light" onPress={onToggleDark} title={isDark ? 'Light mode' : 'Dark mode'}>
           {isDark ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>

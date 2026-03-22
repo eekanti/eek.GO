@@ -51,7 +51,7 @@ export default function ChatView({ onToggleStats, showStats }) {
             <ForgeIcon size={36} />
           </div>
           <div>
-            <h2 className="text-2xl font-bold text-foreground">eek-Forge</h2>
+            <h2 className="text-2xl font-bold text-foreground">eek.FORGE</h2>
             <p className="text-default-500 text-sm mt-1">AI-Powered Coding Pipeline</p>
           </div>
           <p className="text-default-400 text-sm max-w-sm leading-relaxed">
