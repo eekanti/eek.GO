@@ -1,4 +1,4 @@
-# Troubleshooting Guide — eek-Go v3
+# Troubleshooting Guide — eek.GO v3
 
 ## LM Studio Connection
 

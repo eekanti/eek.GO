@@ -1,4 +1,4 @@
-# eek-Go v3 Pipeline Architecture
+# eek.GO Pipeline Architecture
 
 47 nodes | 2 models | 12 deterministic checks | Fully local
 

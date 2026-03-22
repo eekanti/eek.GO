@@ -1,46 +1,52 @@
-# eek-Go Pipeline Prompts
+# eek.GO Pipeline Prompts
 
-Each file documents one agent in the pipeline — its role, model, parameters, prompt text, and behavior.
+Each file documents one agent in the pipeline — its role, model, parameters, and prompt text.
 
 ## Pipeline Flow
 
 ```
-User Message → Agent (triage) → Planner → Research → Stitch Concepts
-  → Coder (per task) → Build Check → Playtest
-  → Visual Reviewer → Code Reviewer → Review Parse
-  → Fixer (if needed) → Post-Fix Build → Visual Loop
-  → Final Reviewer → Pipeline Report
+User Message → Triage (9B, in Forge)
+  → Planner (27B) → Research (MCP + Exa)
+  → Coder Loop (27B, per task) → Build Check
+  → Console Check (Playwright audits)
+  → Code Review (9B VL, sees screenshot)
+  → Fixer (27B, if critical issues)
+  → Pipeline Report → Write Memory → Done
 ```
 
-## Agent Files
+## Agents
 
 | File | Agent | Model | Purpose |
 |------|-------|-------|---------|
-| [agent.md](agent.md) | Pre-Planning Triage | Qwen3.5-9B | Decide: build or ask questions |
-| [planner.md](planner.md) | Task Planner | Qwen3.5-27B VL | Break request into tasks |
-| [coder.md](coder.md) | Code Writer | Qwen3.5-27B VL | Write/modify project files |
-| [visual-reviewer.md](visual-reviewer.md) | Visual Reviewer | Qwen3.5-27B VL | Compare screenshots to references |
-| [code-reviewer.md](code-reviewer.md) | Code Reviewer | Qwen3.5-27B | Review code quality (no images) |
-| [fixer.md](fixer.md) | Code Fixer | Qwen3.5-27B VL | Fix issues from review |
-| [final-reviewer.md](final-reviewer.md) | Final Reviewer | DeepSeek-R1-32B | Score + suggest next steps |
+| [agent.md](agent.md) | Triage | qwen/qwen3.5-9b | READY_TO_BUILD or ask questions |
+| [planner.md](planner.md) | Planner | qwen3.5-27b@q4_k_m | Break request into tasks |
+| [coder.md](coder.md) | Coder | qwen3.5-27b@q4_k_m | Write/modify project files |
+| [code-reviewer.md](code-reviewer.md) | Reviewer | qwen/qwen3.5-9b (VL) | Score quality from screenshot + code |
+| [fixer.md](fixer.md) | Fixer | qwen3.5-27b@q4_k_m | Fix critical issues from review |
 
-## Model Parameters (Qwen3.5 Recommended)
+**Removed in v3:** Visual Reviewer (separate screenshot comparison), Final Reviewer (DeepSeek-R1-32B). Replaced by 9B VL reviewer with Playwright screenshot + deterministic audits.
 
-| Role | temp | top_p | top_k | presence_penalty | Mode |
-|------|------|-------|-------|------------------|------|
-| Agent | 0.6 | 0.85 | - | - | Conversational |
-| Planner | 1.0 | 0.95 | 20 | 1.5 | Reasoning |
-| Coder | 0.6 | 0.95 | 20 | 0.0 | Precise coding |
-| Reviewer | 0.7 | 0.8 | 20 | 1.5 | Instruct/JSON |
-| Fixer | 0.6 | 0.95 | 20 | 0.0 | Precise coding |
-| Final | 0.3 | 0.7 | - | - | Reasoning (DeepSeek) |
+## Model Parameters
 
-## Key Architectural Decisions
+| Role | temp | top_p | top_k | max_tokens | Mode |
+|------|------|-------|-------|------------|------|
+| Triage | 0.6 | 0.85 | — | 2048 | Conversational |
+| Planner | 1.0 | 0.95 | 20 | 32768 | Reasoning (thinking) |
+| Coder | 0.6 | 0.95 | 20 | 32768 | Precise coding |
+| Reviewer | 0.7 | 0.8 | 20 | 131072 | VL + JSON output |
+| Fixer | 0.6 | 0.95 | 20 | 32768 | Precise coding |
 
-- **Instruction-first prompt order** — task description is FIRST in the user message, research docs LAST
-- **Two-pass review** — visual (images, no code) + code (code, no images) fit in context separately
-- **reasoning_content** — LM Studio always puts Qwen3.5-27B output here, all parsers check both fields
-- **Design system injection** — Tailwind config extracted from reference HTML, injected before code context
-- **Asset enforcement** — coder/fixer/reviewer all warned about unused PNGs in public/assets/
-- **Fixer gate** — Code node gates (not IF nodes) prevent phantom file creation
-- **Pipeline report** — deterministic checks at the end catch scoring bugs, missing @tailwind, etc.
+## Key Design Decisions
+
+- **2 models, not 6** — simpler model management, only 27B + 9B swaps
+- **9B VL as reviewer** — sees the actual screenshot, not just code
+- **Deterministic audits** — 9 Playwright checks catch what the LLM misses
+- **memory.md persistence** — project context survives across pipeline runs
+- **Engineering principles in prompts** — fix root causes, no workarounds
+- **Scoped ScrollTrigger cleanup** — each section kills only its own triggers
+- **gsap.fromTo over gsap.from** — StrictMode-safe animations
+- **Instruction-first prompt order** — task first, research docs last
+- **reasoning_content parsing** — LM Studio puts Qwen output here, parsers check both fields
+- **Research docs in fixer** — fixer gets the same library docs as coder
+- **GSAP MCP server** — real API docs prevent hallucinated methods
+- **Scoring rules** — invisible content forces score below 50
