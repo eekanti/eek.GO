@@ -814,6 +814,19 @@
         5700,
         350
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const http = require('http');\nconst projectId = $('Extract Input').first().json.project_id || 'unknown';\nconst userMessage = ($('Extract Input').first().json.message || '').substring(0, 80);\nconst staticData = $getWorkflowStaticData('global');\nconst buildPassed = (staticData._buildResult || {}).success;\nconst quality = ((staticData._reviewResult || {}).code_quality) || '?';\n\nconst commitMsg = 'Pipeline: ' + (buildPassed ? 'PASS' : 'FAIL') + ' q=' + quality + ' \u2014 ' + userMessage;\n\nconst body = JSON.stringify({ message: commitMsg });\nconst result = await new Promise((resolve) => {\n  const req = http.request({\n    hostname: 'file-api', port: 3456, method: 'POST',\n    path: '/projects/' + projectId + '/git-commit',\n    headers: {\n      'Authorization': 'Bearer ' + ($env.FILE_API_TOKEN || ''),\n      'Content-Type': 'application/json',\n      'Content-Length': Buffer.byteLength(body)\n    },\n    timeout: 15000\n  }, res => {\n    let data = '';\n    res.on('data', c => data += c);\n    res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ success: false }); } });\n  });\n  req.on('error', () => resolve({ success: false }));\n  req.write(body); req.end();\n});\n\nreturn [{ json: { ...$json, git_commit: result } }];"
+      },
+      "id": "git-commit",
+      "name": "Git: Auto-Commit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6200,
+        100
+      ]
     }
   ],
   "connections": {
@@ -1243,7 +1256,7 @@
       "main": [
         [
           {
-            "node": "Write Project Memory",
+            "node": "Git: Auto-Commit",
             "type": "main",
             "index": 0
           }
@@ -1332,6 +1345,17 @@
         [
           {
             "node": "Fix: Build",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Git: Auto-Commit": {
+      "main": [
+        [
+          {
+            "node": "Write Project Memory",
             "type": "main",
             "index": 0
           }

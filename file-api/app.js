@@ -833,6 +833,114 @@ app.get('/preview/status', (req, res) => {
   }
 });
 
+// ─── Git auto-commit: snapshot project state after each pipeline run ────
+app.post('/projects/:id/git-commit', (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(base)) return res.status(404).json({ error: 'Project not found' });
+
+    const message = req.body.message || 'Pipeline auto-commit';
+    const opts = { cwd: base, encoding: 'utf8', timeout: 15000, stdio: 'pipe' };
+
+    // Initialize git repo if not exists
+    if (!fs.existsSync(path.join(base, '.git'))) {
+      execSync('git init', opts);
+      fs.writeFileSync(path.join(base, '.gitignore'), 'node_modules/\ndist/\n.vite/\n', 'utf8');
+      execSync('git add .gitignore', opts);
+    }
+    // Always ensure git config is set
+    execSync('git config user.email "pipeline@eek.go"', opts);
+    execSync('git config user.name "eek.GO Pipeline"', opts);
+
+    // Stage all changes
+    execSync('git add -A', opts);
+
+    // Check if there are changes to commit
+    try {
+      execSync('git diff --cached --quiet', opts);
+      return res.json({ success: true, committed: false, message: 'No changes to commit' });
+    } catch {
+      // There are staged changes — commit them
+    }
+
+    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, opts);
+
+    // Get the commit hash
+    const hash = execSync('git rev-parse --short HEAD', opts).trim();
+    const log = execSync('git log --oneline -5', opts).trim();
+
+    res.json({ success: true, committed: true, hash, message, recent: log.split('\n') });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── Git revert: undo last commit ────
+app.post('/projects/:id/git-revert', (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(path.join(base, '.git'))) {
+      return res.status(400).json({ error: 'No git repo in this project' });
+    }
+    const opts = { cwd: base, encoding: 'utf8', timeout: 10000, stdio: 'pipe' };
+    execSync('git revert HEAD --no-edit', opts);
+    const hash = execSync('git rev-parse --short HEAD', opts).trim();
+    res.json({ success: true, hash, message: 'Reverted last commit' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── Git log: view commit history ────
+app.get('/projects/:id/git-log', (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(path.join(base, '.git'))) {
+      return res.json({ commits: [] });
+    }
+    const opts = { cwd: base, encoding: 'utf8', timeout: 5000, stdio: 'pipe' };
+    const log = execSync('git log --oneline -20', opts).trim();
+    res.json({ commits: log ? log.split('\n') : [] });
+  } catch (e) {
+    res.json({ commits: [] });
+  }
+});
+
+// ─── TypeScript check: run tsc --noEmit without full build ────
+app.post('/projects/:id/typecheck', (req, res) => {
+  try {
+    const { base } = safePath(req.params.id);
+    if (!fs.existsSync(path.join(base, 'tsconfig.json'))) {
+      return res.json({ success: true, errors: [], message: 'No tsconfig.json — skipping' });
+    }
+
+    try {
+      execSync('npx tsc --noEmit 2>&1', { cwd: base, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
+      return res.json({ success: true, errors: [] });
+    } catch (e) {
+      const output = (e.stdout || e.stderr || e.message);
+      // Parse TypeScript errors
+      const errors = [];
+      const lines = output.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^(.+)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)/);
+        if (match) {
+          errors.push({
+            file: match[1],
+            line: parseInt(match[2]),
+            column: parseInt(match[3]),
+            code: match[4],
+            message: match[5]
+          });
+        }
+      }
+      return res.json({ success: false, errors, output: output.slice(0, 3000) });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
