@@ -827,6 +827,142 @@
         6200,
         100
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const http = require('http');\nconst staticData = $getWorkflowStaticData('global');\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\n\nconst result = await new Promise((resolve) => {\n  const req = http.request({\n    hostname: 'file-api', port: 3456, method: 'POST',\n    path: '/projects/' + projectId + '/typecheck',\n    headers: {\n      'Authorization': 'Bearer ' + ($env.FILE_API_TOKEN || ''),\n      'Content-Type': 'application/json',\n      'Content-Length': 2\n    },\n    timeout: 30000\n  }, res => {\n    let data = '';\n    res.on('data', c => data += c);\n    res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({ success: true, errors: [] }); } });\n  });\n  req.on('error', () => resolve({ success: true, errors: [] }));\n  req.setTimeout(30000, () => { req.destroy(); resolve({ success: true, errors: [] }); });\n  req.write('{}'); req.end();\n});\n\nif (!staticData._tsErrors) staticData._tsErrors = [];\nconst errors = result.errors || [];\nif (errors.length > 0) {\n  staticData._tsErrors.push(...errors.slice(0, 10));\n}\n\n// Track retry count\nif (!staticData._tsFixAttempt) staticData._tsFixAttempt = 0;\n\nreturn [{ json: { \n  ...$json, \n  typecheck_passed: result.success || errors.length === 0,\n  ts_errors: errors,\n  ts_error_summary: errors.slice(0, 8).map(e => e.file + ':' + e.line + ' ' + e.message).join('\\n'),\n  _tsFixAttempt: staticData._tsFixAttempt\n} }];"
+      },
+      "id": "ts-check",
+      "name": "TypeScript Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const passed = $json.typecheck_passed;\nconst attempt = $json._tsFixAttempt || 0;\nconst staticData = $getWorkflowStaticData('global');\n\n// Pass, or max retries reached (2 attempts max)\nif (passed || attempt >= 2) {\n  if (!passed) {\n    // Log that we gave up after 2 attempts\n    try {\n      const http = require('http');\n      const cbBody = JSON.stringify({\n        event: 'typecheck_warning', project_id: $('Extract Input').first().json.project_id || 'unknown',\n        data: { message: 'TypeScript errors remain after ' + attempt + ' fix attempts', errors: ($json.ts_errors || []).length }\n      });\n      const req = http.request({ hostname: 'forge', port: 3500, path: '/api/status-callback', method: 'POST',\n        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(cbBody) } });\n      req.on('error', () => {}); req.write(cbBody); req.end();\n    } catch {}\n  }\n  staticData._tsFixAttempt = 0;\n  return [{ json: $json }];\n}\n\n// Fail \u2014 needs fix\nreturn [];"
+      },
+      "id": "ts-route-pass",
+      "name": "TS: Pass Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const passed = $json.typecheck_passed;\nconst attempt = $json._tsFixAttempt || 0;\n\nif (!passed && attempt < 2) {\n  return [{ json: $json }];\n}\nreturn [];"
+      },
+      "id": "ts-route-fail",
+      "name": "TS: Fix Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3700,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nconst errors = $json.ts_errors || [];\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\n\nstaticData._tsFixAttempt = (staticData._tsFixAttempt || 0) + 1;\n\n// Get the files that have errors\nconst errorFiles = new Set(errors.map(e => e.file.replace(/^\\.\\//, '')));\nconst fileSections = allFiles\n  .filter(f => errorFiles.has(f.path))\n  .map(f => '### ' + f.path + '\\n```\\n' + (f.content || '') + '\\n```')\n  .join('\\n\\n');\n\nconst errorList = errors.map(e => e.file + ':' + e.line + ' \u2014 ' + e.code + ': ' + e.message).join('\\n');\n\nconst systemMsg = `You are a Senior Full-Stack Developer. Fix the TypeScript errors listed below.\n\nFORMAT \u2014 use SEARCH/REPLACE blocks for targeted edits:\nFILE: path/to/file.ext\n<<<<<<< SEARCH\n[exact lines to find]\n=======\n[replacement lines]\n>>>>>>> REPLACE\n\nRULES:\n- Fix ONLY the TypeScript errors listed \u2014 do not change anything else\n- Do NOT remove existing exports or imports that are still used\n- Do NOT remove @tailwind directives from CSS files`;\n\nconst userMsg = 'Fix these TypeScript errors:\\n\\n' + errorList + '\\n\\nFILES WITH ERRORS:\\n' + fileSections;\n\nreturn [{ json: {\n  model: $env.CODER_MODEL || 'qwen3.5-27b@q4_k_m',\n  messages: [\n    { role: 'system', content: systemMsg },\n    { role: 'user', content: userMsg }\n  ],\n  temperature: 0.3, top_p: 0.9, top_k: 20, max_tokens: parseInt($env.CODER_MAX_TOKENS) || 32768,\n  _project_id: projectId\n} }];"
+      },
+      "id": "ts-fix-build",
+      "name": "TS Fix: Build",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3800,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.LLM_API_KEY || '') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "ts-fix-call",
+      "name": "TS Fix: Call LM Studio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3900,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $json.choices[0].message || {};\nlet raw = msg.content || '';\nconst reasoning = msg.reasoning_content || '';\n\nlet content = raw.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\nif (content.includes('</think>')) content = content.split('</think>').pop().trim();\nif (content.length < 50 && reasoning.length > 50) {\n  content = reasoning.replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\n  if (content.includes('</think>')) content = content.split('</think>').pop().trim();\n}\n\nconst files = [];\nconst seen = new Set();\nconst staticData = $getWorkflowStaticData('global');\nconst allFiles = staticData._allFileContents || [];\nconst projectId = staticData._currentProjectId || $('Extract Input').first().json.project_id || 'unknown';\n\n// Parse SEARCH/REPLACE blocks\nconst edits = [];\nconst editRe = /FILE:\\s*([\\w.\\/-]+)\\s*\\n<<<<<<< SEARCH\\n([\\s\\S]*?)\\n=======\\n([\\s\\S]*?)\\n>>>>>>> REPLACE/g;\nlet em;\nwhile ((em = editRe.exec(content)) !== null) {\n  edits.push({ path: em[1].trim(), search: em[2], replace: em[3] });\n}\n\n// Parse full file blocks\nconst fileRe = /###\\s+([\\w.\\/-]+\\.(?:ts|tsx|js|jsx|json|css|html))\\s*\\n\\`\\`\\`[\\w]*\\n([\\s\\S]*?)\\`\\`\\`/g;\nlet fm;\nwhile ((fm = fileRe.exec(content)) !== null) {\n  if (!seen.has(fm[1].trim())) { seen.add(fm[1].trim()); files.push({ path: fm[1].trim(), content: fm[2] }); }\n}\n\n// Apply edits\nconst editsByFile = {};\nfor (const e of edits) { if (!editsByFile[e.path]) editsByFile[e.path] = []; editsByFile[e.path].push(e); }\nfor (const [p, fileEdits] of Object.entries(editsByFile)) {\n  if (seen.has(p)) continue;\n  const existing = allFiles.find(f => f.path === p);\n  if (!existing) continue;\n  let fc = existing.content;\n  let applied = 0;\n  for (const edit of fileEdits) {\n    if (fc.includes(edit.search)) { fc = fc.replace(edit.search, edit.replace); applied++; }\n  }\n  if (applied > 0) { seen.add(p); files.push({ path: p, content: fc }); }\n}\n\nif (files.length === 0) return [{ json: { project_id: projectId, files: [], _skipWrite: true } }];\nreturn [{ json: { project_id: projectId, files } }];"
+      },
+      "id": "ts-fix-parse",
+      "name": "TS Fix: Parse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.FILE_API_URL || 'http://file-api:3456') + '/projects/' + $json.project_id + '/files-batch' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.FILE_API_TOKEN || '') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: $json.files || [] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ts-fix-write",
+      "name": "TS Fix: Write",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4100,
+        500
+      ],
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -1010,7 +1146,7 @@
       "main": [
         [
           {
-            "node": "P2: Store Result",
+            "node": "TypeScript Check",
             "type": "main",
             "index": 0
           }
@@ -1356,6 +1492,88 @@
         [
           {
             "node": "Write Project Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TypeScript Check": {
+      "main": [
+        [
+          {
+            "node": "TS: Pass Gate",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "TS: Fix Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS: Pass Gate": {
+      "main": [
+        [
+          {
+            "node": "P2: Store Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS: Fix Gate": {
+      "main": [
+        [
+          {
+            "node": "TS Fix: Build",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS Fix: Build": {
+      "main": [
+        [
+          {
+            "node": "TS Fix: Call LM Studio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS Fix: Call LM Studio": {
+      "main": [
+        [
+          {
+            "node": "TS Fix: Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS Fix: Parse": {
+      "main": [
+        [
+          {
+            "node": "TS Fix: Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TS Fix: Write": {
+      "main": [
+        [
+          {
+            "node": "TypeScript Check",
             "type": "main",
             "index": 0
           }
