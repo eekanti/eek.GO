@@ -93,6 +93,14 @@ Each project has a `memory.md` file that persists across pipeline runs:
 
 The coder and fixer read memory.md as project context, so they understand what was already built and what's still broken.
 
+## Code Quality Features
+
+- **Search/replace diffs** — coder outputs targeted edits for existing files instead of full rewrites, preventing regressions
+- **TypeScript check per task** — `tsc --noEmit` runs after each task write, with auto-fix loop (max 2 retries)
+- **Git auto-commit** — each pipeline run snapshots the project state in a per-project git repo for easy revert
+- **Git revert** — undo a bad pipeline run with one API call
+- **Anti-rewrite rules** — coder prompt enforces "never rewrite a file from scratch"
+
 ## Services
 
 | Service | Port | Purpose |

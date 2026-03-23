@@ -39,14 +39,17 @@ User Message → Triage (9B, in Forge)
 ## Key Design Decisions
 
 - **2 models, not 6** — simpler model management, only 27B + 9B swaps
+- **Search/replace diffs** — coder edits existing files with targeted SEARCH/REPLACE blocks instead of full rewrites
+- **TypeScript check per task** — `tsc --noEmit` after each task write, with auto-fix loop (max 2 retries)
+- **Git auto-commit per run** — per-project git repo snapshots state after each pipeline run
 - **9B VL as reviewer** — sees the actual screenshot, not just code
 - **Deterministic audits** — 9 Playwright checks catch what the LLM misses
 - **memory.md persistence** — project context survives across pipeline runs
 - **Engineering principles in prompts** — fix root causes, no workarounds
-- **Scoped ScrollTrigger cleanup** — each section kills only its own triggers
-- **gsap.fromTo over gsap.from** — StrictMode-safe animations
+- **Anti-rewrite rules** — coder prompt enforces preserving existing file structure
 - **Instruction-first prompt order** — task first, research docs last
 - **reasoning_content parsing** — LM Studio puts Qwen output here, parsers check both fields
+- **User request in reviewer** — reviewer sees the original prompt to verify the task was addressed
 - **Research docs in fixer** — fixer gets the same library docs as coder
 - **GSAP MCP server** — real API docs prevent hallucinated methods
 - **Scoring rules** — invisible content forces score below 50

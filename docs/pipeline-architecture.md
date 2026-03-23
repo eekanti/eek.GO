@@ -1,6 +1,6 @@
 # eek.GO Pipeline Architecture
 
-47 nodes | 2 models | 12 deterministic checks | Fully local
+53 nodes | 2 models | 12 deterministic checks | Git versioned | Fully local
 
 ## Pipeline Flow
 
@@ -58,7 +58,11 @@
 │ → P2: Prepare Write
 │   Filter files, merge package.json
 │ → P2: Write Files
-│   POST /files-batch to file-api
+│   POST /files-batch to file-api (search/replace diffs for existing files)
+│ → TypeScript Check
+│   tsc --noEmit — catches type errors per task
+│   ├─ PASS → P2: Store Result
+│   └─ FAIL → TS Fix loop (LLM fixes errors, max 2 retries)
 │ → P2: Store Result
 │   Track written files
 │ → P2: Exit Gate
@@ -95,6 +99,9 @@
 
 → Pipeline Report
   Deterministic summary + audit results
+
+→ Git: Auto-Commit
+  Snapshot project state (per-project git repo in file-api)
 
 → Write Project Memory
   Update memory.md (goal, issues, history)
