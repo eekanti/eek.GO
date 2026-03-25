@@ -59,7 +59,7 @@ Single model pipeline — 27B stays loaded the entire run. No model swaps.
 | **Triage** | qwen/qwen3.5-9b | 32K | 0.6 | Quick conversational Q&A in Forge (separate) |
 | **Planner** | qwen3.5-27b@q4_k_m | 65K | 1.0 | Task decomposition |
 | **Coder** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Code generation, search/replace diffs |
-| **TS Fix** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Self-correction from TypeScript errors |
+| **TS Fix** | qwen3.5-27b@q4_k_m | 65K | 0.3 | Self-correction from TypeScript errors |
 | **Auto-Fix** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Self-correction from build errors |
 
 The triage agent (9B) runs in Forge before the pipeline starts. The pipeline itself uses only the 27B model.
