@@ -10,6 +10,7 @@
       "WebFetch(domain:venturebeat.com)",
       "WebFetch(domain:tessl.io)",
       "WebFetch(domain:livecodebench.github.io)",
+      "Bash(*)",
       "Bash(curl -s -H \"X-N8N-API-KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4YTgzY2FjOC0yZTU0LTQ4ZmMtOGRhNi1lZjRkMDI5ODhkMmYiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiYzJmNzI2YmYtMTIyYi00YmExLWJjNGItYjg5MTYwNTJjNTYyIiwiaWF0IjoxNzczMzY1NDE0fQ.C1n9yiAICJZ3nrd5bZyGsCJ3BRqSAqGEJ75q9MeNXGk\" \"http://n8n:5678/api/v1/workflows/PNOMGkCjzFGxf52E\")",
       "Bash(curl -s -H \"X-N8N-API-KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4YTgzY2FjOC0yZTU0LTQ4ZmMtOGRhNi1lZjRkMDI5ODhkMmYiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiYzJmNzI2YmYtMTIyYi00YmExLWJjNGItYjg5MTYwNTJjNTYyIiwiaWF0IjoxNzczMzY1NDE0fQ.C1n9yiAICJZ3nrd5bZyGsCJ3BRqSAqGEJ75q9MeNXGk\" \"http://localhost:5678/api/v1/workflows/PNOMGkCjzFGxf52E\")",
       "Bash(curl -s -X PUT -H \"X-N8N-API-KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4YTgzY2FjOC0yZTU0LTQ4ZmMtOGRhNi1lZjRkMDI5ODhkMmYiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiYzJmNzI2YmYtMTIyYi00YmExLWJjNGItYjg5MTYwNTJjNTYyIiwiaWF0IjoxNzczMzY1NDE0fQ.C1n9yiAICJZ3nrd5bZyGsCJ3BRqSAqGEJ75q9MeNXGk\" -H \"Content-Type: application/json\" -d @/tmp/workflow_v4.json \"http://localhost:5678/api/v1/workflows/PNOMGkCjzFGxf52E\")",

@@ -151,18 +151,89 @@ function PreviewPanel({ projectId }) {
   )
 }
 
+function StatusRow({ icon, label, value, color = 'default' }) {
+  const colors = {
+    success: 'text-success-600 dark:text-emerald-400',
+    danger: 'text-danger-600 dark:text-red-400',
+    warning: 'text-warning-600 dark:text-amber-400',
+    default: 'text-default-600 dark:text-zinc-400'
+  }
+  return (
+    <div className="flex items-center justify-between py-1">
+      <div className="flex items-center gap-2 text-xs text-default-500">
+        <span>{icon}</span>
+        <span>{label}</span>
+      </div>
+      <span className={`text-xs font-medium ${colors[color]}`}>{value}</span>
+    </div>
+  )
+}
+
+function ReportCard({ data }) {
+  const quality = data.code_quality || data.quality || 0
+  const buildOk = data.build_passed
+  const consoleErrors = data.console?.errors || 0
+  const pageCrash = data.console?.page_error
+  const audits = data.audits || {}
+  const postFix = data.post_fix
+
+  const hasAuditIssues = audits.invisible > 0 || audits.broken_links > 0 || audits.broken_images > 0 || audits.contrast_issues > 0
+
+  return (
+    <div className="space-y-1 bg-default-100/50 dark:bg-zinc-800/50 rounded-lg px-3 py-2">
+      <p className="text-[10px] font-semibold text-default-400 uppercase tracking-wider pb-1">Pipeline Report</p>
+      <StatusRow icon="🔨" label="Build" value={buildOk ? 'Passed' : 'Failed'} color={buildOk ? 'success' : 'danger'} />
+      <StatusRow icon="🖥️" label="Console" value={pageCrash ? 'Page Crash' : consoleErrors === 0 ? 'Clean' : `${consoleErrors} errors`} color={pageCrash || consoleErrors > 0 ? 'danger' : 'success'} />
+      {quality > 0 && (
+        <StatusRow icon="⭐" label="Quality" value={`${quality}/100`} color={quality >= 70 ? 'success' : quality >= 40 ? 'warning' : 'danger'} />
+      )}
+      {hasAuditIssues && (
+        <StatusRow icon="🔍" label="Audits"
+          value={[
+            audits.invisible > 0 && `${audits.invisible} invisible`,
+            audits.broken_links > 0 && `${audits.broken_links} broken links`,
+            audits.broken_images > 0 && `${audits.broken_images} broken images`,
+            audits.contrast_issues > 0 && `${audits.contrast_issues} contrast`
+          ].filter(Boolean).join(', ')}
+          color="warning"
+        />
+      )}
+      {audits.content_coverage != null && (
+        <StatusRow icon="📄" label="Content" value={`${audits.content_coverage}% coverage`} color={audits.content_coverage >= 80 ? 'success' : 'warning'} />
+      )}
+      {postFix && (
+        <StatusRow icon="🩺" label="Post-fix check"
+          value={postFix.ts_passed && postFix.build_passed ? 'Passed' : [!postFix.ts_passed && 'TS errors', !postFix.build_passed && 'build failed'].filter(Boolean).join(', ')}
+          color={postFix.ts_passed && postFix.build_passed ? 'success' : 'danger'}
+        />
+      )}
+    </div>
+  )
+}
+
 export default function ResultMessage({ message, onUseSuggestion }) {
   const [showFiles, setShowFiles] = useState(false)
   const data = message.metadata || {}
+  const quality = data.code_quality || data.final_quality || data.quality || 0
+  const hasFailed = data.build_passed === false || data.post_fix?.build_passed === false
+  const borderClass = hasFailed
+    ? 'border-danger-200 dark:border-red-800/50 bg-danger-50/30 dark:bg-red-950/20'
+    : 'border-success-200 dark:border-emerald-800/50 bg-success-50/50 dark:bg-emerald-950/30'
+  const headerColor = hasFailed
+    ? 'text-danger-700 dark:text-red-400'
+    : 'text-success-700 dark:text-emerald-400'
+  const dotColor = hasFailed ? 'bg-danger' : 'bg-success animate-pulse'
 
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] w-full">
-        <Card shadow="sm" className="border border-success-200 dark:border-emerald-800/50 bg-success-50/50 dark:bg-emerald-950/30">
+        <Card shadow="sm" className={`border ${borderClass}`}>
           <CardHeader className="flex items-center justify-between pb-2">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span className="text-xs font-semibold text-success-700 dark:text-emerald-400 uppercase tracking-wider">Build Complete</span>
+              <div className={`w-2 h-2 rounded-full ${dotColor}`} />
+              <span className={`text-xs font-semibold uppercase tracking-wider ${headerColor}`}>
+                {hasFailed ? 'Build Failed' : 'Build Complete'}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               {data.tasks_completed != null && (
@@ -171,18 +242,18 @@ export default function ResultMessage({ message, onUseSuggestion }) {
               {data.files_written?.length > 0 && (
                 <Chip size="sm" variant="flat">{data.files_written.length} files</Chip>
               )}
-              {(data.final_quality || data.quality) != null && (
-                <Chip size="sm" variant="flat" color={(data.final_quality || data.quality) >= 70 ? 'success' : (data.final_quality || data.quality) >= 40 ? 'warning' : 'danger'}>
-                  {data.final_quality || data.quality}/100
+              {quality > 0 && (
+                <Chip size="sm" variant="flat" color={quality >= 70 ? 'success' : quality >= 40 ? 'warning' : 'danger'}>
+                  {quality}/100
                 </Chip>
               )}
             </div>
           </CardHeader>
           <Divider />
           <CardBody className="pt-3 space-y-3">
-            {data.summary && (
-              <p className="text-sm text-default-700 dark:text-zinc-300 leading-relaxed">{data.summary}</p>
-            )}
+            {/* Report Card */}
+            <ReportCard data={data} />
+
             {data.files_written?.length > 0 && (
               <div>
                 <Button size="sm" variant="light" onPress={() => setShowFiles(v => !v)} className="text-default-500 px-0">

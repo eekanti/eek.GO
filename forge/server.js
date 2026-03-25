@@ -9,7 +9,7 @@ const app = express()
 app.use(express.json({ limit: '100mb' }))
 
 const N8N_URL = process.env.N8N_URL || 'http://n8n:5678'
-const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook/coding-agent'
+const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook/coding-agent-v4'
 const FILE_API_URL = process.env.FILE_API_URL || 'http://file-api:3456'
 const FILE_API_TOKEN = process.env.FILE_API_TOKEN || ''
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://10.0.0.100:1234/v1/chat/completions'
@@ -68,7 +68,7 @@ app.post('/api/status-callback', (req, res) => {
     planning_complete: `🗂️ Planned ${data?.task_count || 0} tasks`,
     task_written: `✍️ Wrote ${data?.task_id || 'task'}: ${(data?.files || []).join(', ')}`,
     review_complete: `✅ Review complete — quality: ${data?.quality || '?'}/100`,
-    research_complete: `📚 Fetched docs for ${(data?.libraries_fetched || []).join(', ') || 'libraries'} (${data?.doc_count || 0} docs)`,
+    research_complete: `📚 Fetched docs: ${data?.sources ? Object.entries(data.sources).map(([lib, src]) => lib + ' (' + src + ')').join(', ') : (data?.libraries_fetched || []).join(', ')} (${data?.doc_count || 0} docs)`,
     build_check_passed: `✅ Build check passed`,
     playtest_complete: `🎮 Playtest complete — ${data?.screenshots || 0} screenshots, ${data?.observations || 0} observations`,
     build_check_failed: `❌ Build failed: ${data?.error || 'unknown'} (${data?.stage || 'build'})`,
@@ -77,7 +77,9 @@ app.post('/api/status-callback', (req, res) => {
     plan_approval: `📋 Plan ready for review (${data?.task_count || 0} tasks, ${data?.total_files || 0} files)`,
     plan_approved: `✅ Plan ${data?.action === 'edit' ? 'approved with edits' : 'approved'} — continuing...`,
     final_review_complete: `📋 Final review: ${data?.quality || '?'}/100`,
-    pipeline_report: data?.report || '📊 Pipeline report generated',
+    post_fix_passed: `✅ Post-fix verify passed (TS + build)`,
+    post_fix_failed: `❌ Post-fix verify failed: ${!data?.ts_passed ? data?.ts_error_count + ' TS errors' : ''} ${!data?.build_passed ? 'build failed' : ''}`.trim(),
+    pipeline_report: '📊 Pipeline report',
     pipeline_complete: `🎉 Pipeline finished! ${data?.tasks_completed || 0} tasks, ${data?.files_written?.length || 0} files`,
     pipeline_error: `⚠️ Error: ${data?.error || 'unknown'}`
   }

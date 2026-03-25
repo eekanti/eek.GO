@@ -1,170 +1,108 @@
-# eek.GO Pipeline Architecture
+# eek.GO v4 Pipeline Architecture
 
-53 nodes | 2 models | 12 deterministic checks | Git versioned | Fully local
+42 nodes | 1 model (27B) | 9 deterministic audits | Git versioned | Fully local
 
 ## Pipeline Flow
 
 ```
-⊙ Webhook
-  Entry point
+Webhook → Extract Input → CB: Pipeline Started → Fetch Project Files →
+  Prepare Planner Input (deep API surface + import counting) →
+  Load Model (27B, idempotent) →
 
-→ Extract Input
-  Parse message, project_id
+  Planner: Build Request → Call LM Studio → Parse Response →
+  CB: Planning Complete → Research: Fetch Docs (import-aware) →
+  Spread Tasks →
 
-→ CB: Pipeline Started
-  → Forge status
+  ┌─── TASK LOOP (per task) ─────────────────────────────────────┐
+  │ P2: Stash Context → P2: Build Code Input →                   │
+  │ CW: Prepare Message → CW: Call LM Studio → CW: Parse →       │
+  │ P2: Prepare Write → P2: Write Files →                        │
+  │ TypeScript Check                                              │
+  │   ├─ PASS → P2: Store Result                                 │
+  │   └─ FAIL → TS Fix: Build (with imported files) →            │
+  │            TS Fix: Call LM Studio → TS Fix: Parse →           │
+  │            TS Fix: Write → TypeScript Check (max 2 retries)   │
+  │ → P2: Store Result → P2: Continue Gate / P2: Exit Gate       │
+  └───────────────────────────────────────────────────────────────┘
 
-→ Fetch Project Files
-  GET /files-content from file-api
+  → Build Check
+    ├─ FAIL → Auto-Fix: Prepare → Call → Parse → Write → Build Check (max 3)
+    └─ PASS →
 
-→ Prepare Planner Input
-  Build context, extract memory.md, cache static data
+  → Console Check (Playwright: screenshot + console errors + 9 audits) →
 
-→ Startup: Unload All
-  Unload all LM Studio models
-
-→ Load Model
-  Load 27B @ 65K context
-
-→ Planner: Build Request
-  Build planner prompt from static data
-
-→ Planner: Call LM Studio
-  27B plans tasks (thinking enabled)
-
-→ Planner: Parse Response
-  Extract JSON tasks
-
-→ CB: Planning Complete
-  → Forge status
-
-→ Research: Fetch Docs
-  Context7 → GSAP MCP → Exa fallback
-
-→ Spread Tasks
-  Topological sort, build task queue
-
-┌─── TASK LOOP (per task) ───
-│ → P2: Stash Context
-│   Cache task data for coder
-│ → P2: Build Code Input
-│   Prepare file context for coder
-│ → CW: Prepare Message
-│   Build coder prompt + MCP docs + images
-│ → CW: Call LM Studio
-│   27B writes code
-│ → CW: Parse Response
-│   Extract ### file blocks
-│ → P2: Prepare Write
-│   Filter files, merge package.json
-│ → P2: Write Files
-│   POST /files-batch to file-api (search/replace diffs for existing files)
-│ → TypeScript Check
-│   tsc --noEmit — catches type errors per task
-│   ├─ PASS → P2: Store Result
-│   └─ FAIL → TS Fix loop (LLM fixes errors, max 2 retries)
-│ → P2: Store Result
-│   Track written files
-│ → P2: Exit Gate
-│   Loop back or continue
-└─────────────────────────
-
-→ Build Check
-  npm install + vite build via file-api
-
-⑂ Build Route — splits on build result
-├─ Auto-Fix Gate → Auto-Fix loop (if build failed)
-└─ Build Pass Gate → continues below
-
-→ Console Check
-  Playwright: console errors + screenshot + 9 audits
-    visibility | links | images | contrast
-    interactive | content | responsive | alt-text | empty-sections
-
-→ Swap: Load 9B
-  Unload 27B, load 9B for review
-
-→ Code Review: Build
-  Build reviewer prompt with screenshot + audits
-
-→ Code Review: Call LM Studio
-  9B VL reviews (sees screenshot)
-
-→ Code Review: Parse
-  Extract JSON, normalize fields
-
-⑂ Review Route — splits on critical issues
-├─ Critical Bug Gate → Swap: Load 27B → Fix: Build → Fix: Call → Fix: Parse → Fix: Write
-└─ No Bug Gate → continues below
-
-→ Pipeline Report
-  Deterministic summary + audit results
-
-→ Git: Auto-Commit
-  Snapshot project state (per-project git repo in file-api)
-
-→ Write Project Memory
-  Update memory.md (goal, issues, history)
-
-→ CB: Pipeline Complete
-  → Forge status + suggestions
-
-→ Unload Model
-  Unload all models
+  → Pipeline Report (deterministic — build + console + TS + audits) →
+  → Git: Auto-Commit →
+  → Write Project Memory →
+  → CB: Pipeline Complete
 ```
 
-## Models
+## What v4 Removed (vs v3)
 
-| Model | Size | Role | Context |
-|-------|------|------|---------|
-| qwen3.5-27b@q4_k_m | 27B | Planner, Coder, Fixer | 65K |
-| qwen/qwen3.5-9b | 9B | Triage (Forge), Reviewer (VL) | 65K |
+| Removed Node | Reason |
+|-------------|--------|
+| Swap: Load 9B | No model swaps — 27B stays loaded |
+| Code Review: Build/Call/Parse | 9B couldn't read 82K code accurately |
+| Critical Bug Gate | No reviewer to gate on |
+| No Bug Gate | No reviewer bypass needed |
+| Swap: Load 27B | No model swaps |
+| Fix: Build/Call/Parse/Write | Fixer acted on wrong reviewer feedback |
+| Post-Fix Verify | No fixer to verify |
+| Startup: Unload All | Simplified to idempotent Load Model |
+| Unload Model | Model left loaded for faster next run |
 
-## Deterministic Checks (no LLM)
+## Context Engineering
 
-All run during a single Playwright browser session (~10s):
+### Deep API Surface (Prepare Planner Input)
 
-| Check | What it catches |
-|-------|----------------|
-| vite build | Compile errors, type errors, missing imports |
-| Console errors | Runtime crashes, uncaught exceptions |
-| Visibility audit | Elements stuck at opacity 0 |
-| Link validation | Broken anchor targets (#id not found) |
-| Image validation | Broken `<img>` src (404, not loaded) |
-| Contrast check | WCAG ratio failures on text elements |
-| Interactive check | Buttons/links blocked by overlays |
-| Content coverage | % of page height with visible content |
-| Responsive check | Horizontal overflow at 375px mobile |
-| Alt text check | Images missing alt attribute |
-| Empty section check | Headings with no content below them |
-| Performance | DOM load time, total element count |
+For files imported by 2+ other files, the pipeline extracts:
+- Full interface/type definitions (not just `export interface Foo {...}`)
+- Non-exported interfaces used in createContext or return types
+- Function signatures with parameter types
 
-## Persistence
+This gives the coder exact property names and types — no guessing.
 
-| System | Purpose |
-|--------|---------|
-| `memory.md` | Project goal, architecture, known issues, iteration history |
-| Forge SQLite | Chat history, execution tracking, project metadata |
-| Workflow static data | Per-execution cache (reset each run) |
+### Import-Aware Research (Research: Fetch Docs)
 
-## Infrastructure
+Before fetching docs for a package, the pipeline greps source files for actual imports. Packages listed in package.json but never imported are skipped.
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| n8n | 5678 | Workflow engine |
-| file-api | 3456 (internal) | File storage, build, preview, console check + audits |
-| Forge | 3500 | Chat UI, status callbacks, triage agent |
-| LM Studio | 10.0.0.100:1234 | Local LLM inference |
-| MCP Gateway (docky) | 8811 | Context7, GSAP MCP, Exa, Playwright, GitHub, etc. |
+### TS Fix with Imported Files
 
-## MCP Servers
+When a TypeScript error occurs in a file, the TS Fix node also includes files imported by the error file. This resolves the common "prop mismatch" problem where GameScreen passes wrong props to a child component — the TS Fix sees both files and can fix both sides.
 
-| Server | Tools | Purpose |
-|--------|-------|---------|
-| Context7 | resolve-library-id, get-library-docs | Library documentation |
-| GSAP Master | get_gsap_api_expert, debug_animation_issue, create_production_pattern | GSAP animation reference |
-| Exa | get_code_context_exa | Web search fallback for docs |
-| Magic (21st.dev) | search_components, generate_component | UI component examples |
-| Playwright | browser_navigate, browser_screenshot, etc. | Browser automation |
-| GitHub | create_pull_request, search_code, etc. | GitHub operations |
-| n8n MCP | n8n_get_workflow, n8n_validate_workflow, etc. | Workflow management |
+Supports both relative imports (`../context/GameContext`) and alias imports (`@/context/GameContext`).
+
+### File-Size Safety Check
+
+All parsers (CW: Parse, TS Fix: Parse, Auto-Fix: Parse) reject output files that are less than 50% the size of the original. This prevents the model from accidentally truncating a file when a search/replace block fails to match and falls through to the full-file parser.
+
+### Planner Task Rules
+
+- 3-5 small tasks, max 3 search/replace blocks each
+- New component + its consumer must be in the same task (prevents interface mismatches)
+- Each task touches max 3 existing files
+
+## Deterministic Checks
+
+### TypeScript Check (per task)
+- Runs `tsc --noEmit` via file-api
+- If errors found: TS Fix loop (max 2 retries) with imported-file context
+- TS Fix prompt instructs: fix both sides of a prop mismatch in one pass
+
+### Build Check (post-loop)
+- Runs `vite build` via file-api
+- If fails: Auto-Fix loop (max 3 retries) with config files + error files
+
+### Console Check (Playwright)
+- Launches built project in headless Chromium
+- Takes screenshot (stored in staticData for reference)
+- Captures console errors and page crashes
+- Runs 9 deterministic audits (visibility, links, images, contrast, etc.)
+
+## Pipeline Report
+
+The report is purely deterministic — no LLM opinions:
+- Build: passed/failed
+- Console: clean/errors/page crash
+- Audits: visibility, broken links, broken images, contrast, etc.
+- Quality gate: deterministic checks only

@@ -1,6 +1,6 @@
 # eek.GO — AI Coding Pipeline
 
-A local AI coding pipeline powered by **n8n**, **LM Studio**, and **eek-Forge**. Describe what you want to build, paste a reference screenshot, and the pipeline plans, codes, builds, audits, reviews, and writes files to disk automatically.
+A local AI coding pipeline powered by **n8n**, **LM Studio**, and **eek-Forge**. Describe what you want to build, paste a reference screenshot, and the pipeline plans, codes, builds, audits, and writes files to disk automatically.
 
 Built entirely on local LLMs — no cloud API costs, full privacy, full control.
 
@@ -15,31 +15,33 @@ User → eek-Forge (chat UI)
          │    READY_TO_BUILD or asks 1-3 clarifying questions
          │
          ▼
-       n8n Webhook → eek.GO Pipeline (47 nodes)
+       n8n Webhook → eek.GO v4 Pipeline (42 nodes)
          │
-         ├─ Planner (27B, thinking enabled)
-         │    Breaks request into 2-3 large tasks with visual specs
+         ├─ Planner (27B)
+         │    Breaks request into 3-5 small tasks (max 3 edits each)
          │
          ├─ Research: Fetch Docs
-         │    Context7 → GSAP MCP → Exa fallback + Design Guide
+         │    Import-aware filtering — only fetches docs for actually imported packages
          │
-         ├─ Coder Loop (27B, per task)
-         │    Full project context + research docs + MCP → writes files
+         ├─ Coder Loop (27B, per task, search/replace diffs)
+         │    Deep API surface + full project context → targeted edits
+         │    │
+         │    ├─ TypeScript Check (tsc --noEmit)
+         │    │    Self-correction loop with imported-file context (max 2 retries)
+         │    │
+         │    └─ Next task or exit loop
          │
          ├─ Build Check (vite build)
-         │    Auto-fix loop if build fails (up to 3 attempts)
+         │    Auto-fix loop if build fails (max 3 attempts)
          │
          ├─ Console Check (Playwright)
          │    Screenshot + console errors + 9 deterministic audits
          │
-         ├─ Code Review (9B VL, sees screenshot)
-         │    Scores quality, flags critical issues, suggests next steps
-         │
-         ├─ Fixer (27B, if critical issues found)
-         │    Targeted fixes with research docs + project memory
-         │
          ├─ Pipeline Report (deterministic)
-         │    Build status + audit results + quality score
+         │    Build status + audit results + quality gate
+         │
+         ├─ Git Auto-Commit
+         │    Per-project git repo snapshot after each run
          │
          ├─ Write Project Memory (memory.md)
          │    Goal, architecture, known issues, iteration history
@@ -50,17 +52,25 @@ User → eek-Forge (chat UI)
 
 ## Models
 
-2 models, loaded one at a time via LM Studio load/unload API:
+Single model pipeline — 27B stays loaded the entire run. No model swaps.
 
 | Role | Model | Context | Temp | Purpose |
 |------|-------|---------|------|---------|
-| **Triage** | qwen/qwen3.5-9b | 32K | 0.6 | Quick conversational Q&A in Forge |
-| **Planner** | qwen3.5-27b@q4_k_m | 65K | 1.0 | Task decomposition with thinking |
-| **Coder** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Code generation, 32K max output |
-| **Reviewer** | qwen/qwen3.5-9b | 98K | 0.7 | VL model — sees screenshot + code |
-| **Fixer** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Targeted fixes with research docs |
+| **Triage** | qwen/qwen3.5-9b | 32K | 0.6 | Quick conversational Q&A in Forge (separate) |
+| **Planner** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Task decomposition |
+| **Coder** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Code generation, search/replace diffs |
+| **TS Fix** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Self-correction from TypeScript errors |
+| **Auto-Fix** | qwen3.5-27b@q4_k_m | 65K | 0.6 | Self-correction from build errors |
 
-Pipeline auto-swaps between 27B and 9B as needed. Only one model loaded at a time.
+The triage agent (9B) runs in Forge before the pipeline starts. The pipeline itself uses only the 27B model.
+
+## v4 Design Philosophy
+
+**No LLM reviewer. No fixer. Deterministic checks only.**
+
+The v3 pipeline had a 9B reviewer that scored quality and a 27B fixer that acted on those scores. In practice, the 9B couldn't accurately read 82K of code context and gave wrong feedback, causing the fixer to overwrite correct code. v4 removes both — the coder self-corrects from concrete error messages (TS errors, build failures), and deterministic Playwright audits catch visual/runtime issues.
+
+This matches the approach used by Aider, Codex, and Claude Code: code → lint/typecheck → build → test → done.
 
 ## Deterministic Audits (No LLM)
 
@@ -78,7 +88,17 @@ The Console Check node runs Playwright against the built project and performs:
 | **Alt text** | Images missing alt attributes |
 | **Empty sections** | Headings with no content below |
 
-These catch issues the LLM reviewer misses — invisible content, broken links, accessibility failures.
+These are the quality gate — no LLM opinions, just facts.
+
+## Context Engineering
+
+v4 uses several techniques to give the coder accurate information:
+
+- **Deep API Surface** — extracts interfaces, types, and function signatures from highly-imported files (not just export names)
+- **Import-aware research** — only fetches docs for packages actually imported in source files
+- **File-size safety check** — rejects output files that shrink by >50% (prevents destructive rewrites)
+- **Imported-file context for TS Fix** — when fixing type errors, includes files imported by the error file (resolves `@/` aliases)
+- **Planner rule: component + consumer in same task** — prevents interface mismatches between new components and their parents
 
 ## Project Memory (memory.md)
 
@@ -86,20 +106,21 @@ Each project has a `memory.md` file that persists across pipeline runs:
 
 - **Goal** — original request + refinements from follow-up messages
 - **Architecture** — framework, deps, file count
-- **Decisions** — things the pipeline should NOT change (URLs, imports, assets)
-- **Known Issues** — accumulated from audits and reviews
+- **Known Issues** — from build failures and console errors only (no LLM hallucinations)
 - **Iteration History** — what was requested, built, and unresolved per run
 - **Assets** — images, logos, reference files
 
-The coder and fixer read memory.md as project context, so they understand what was already built and what's still broken.
+The coder reads memory.md as project context for continuity across runs.
 
 ## Code Quality Features
 
-- **Search/replace diffs** — coder outputs targeted edits for existing files instead of full rewrites, preventing regressions
-- **TypeScript check per task** — `tsc --noEmit` runs after each task write, with auto-fix loop (max 2 retries)
-- **Git auto-commit** — each pipeline run snapshots the project state in a per-project git repo for easy revert
-- **Git revert** — undo a bad pipeline run with one API call
+- **Search/replace diffs** — coder outputs targeted edits for existing files instead of full rewrites
+- **TypeScript check per task** — `tsc --noEmit` runs after each task, with self-correction loop (max 2 retries)
+- **TS Fix with imported files** — includes files imported by the error file so it can fix both sides of a prop mismatch
+- **File-size safety check** — prevents the TS Fix or Auto-Fix from destroying files with truncated output
+- **Git auto-commit** — each pipeline run snapshots the project state for easy revert
 - **Anti-rewrite rules** — coder prompt enforces "never rewrite a file from scratch"
+- **Parser with lastIndexOf** — handles malformed search/replace blocks with multiple `=======` separators
 
 ## Services
 
@@ -117,8 +138,7 @@ The coder and fixer read memory.md as project context, so they understand what w
 - **Triage agent** — asks clarifying questions before building
 - **Real-time status** via SSE — watch each pipeline phase
 - **Build & Preview** — one-click dev server with live iframe
-- **Suggestions** — actionable next steps from the reviewer
-- **Pipeline report** — build status, audit results, quality score
+- **Pipeline report** — build status, audit results, deterministic quality gate
 - **Project management** — create, rename, delete projects
 - **Dark mode** — persistent preference
 - **SQLite persistence** — chat history survives restarts
@@ -144,8 +164,8 @@ Download in LM Studio:
 
 | Model | Role |
 |-------|------|
-| `qwen/qwen3.5-9b` | Triage + Reviewer (VL) |
-| `qwen3.5-27b@q4_k_m` | Planner + Coder + Fixer |
+| `qwen/qwen3.5-9b` | Triage (Forge only) |
+| `qwen3.5-27b@q4_k_m` | Planner + Coder + TS Fix + Auto-Fix |
 
 Configure: Flash Attention ON, KV Cache Quantization Q8_0, Max Concurrent Predictions 1.
 
@@ -159,10 +179,8 @@ All in `workflows/.env`:
 | `LM_STUDIO_URL` | Chat completions endpoint |
 | `LM_STUDIO_HOST` | LM Studio base URL (model load/unload) |
 | `CODER_MODEL` | `qwen3.5-27b@q4_k_m` |
-| `REVIEWER_MODEL` | `qwen/qwen3.5-9b` |
 | `AGENT_MODEL` | `qwen/qwen3.5-9b` |
 | `CODER_CTX` | Coder context length (65536) |
-| `REVIEWER_CTX` | Reviewer context length (98304) |
 | `FILE_API_URL` | `http://file-api:3456` |
 | `FILE_API_TOKEN` | Bearer token for File API |
 
@@ -181,7 +199,7 @@ Open **http://localhost:3500**
 ### Via curl
 
 ```bash
-curl -X POST http://localhost:5678/webhook/coding-agent \
+curl -X POST http://localhost:5678/webhook/coding-agent-v4 \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Build a landing page with hero section and features grid",
@@ -194,14 +212,14 @@ curl -X POST http://localhost:5678/webhook/coding-agent \
 | Step | Agent | What happens |
 |------|-------|-------------|
 | **Triage** | 9B | Forge asks questions or sends READY_TO_BUILD |
-| **Plan** | 27B | Breaks request into tasks with visual specs |
-| **Research** | — | Context7 + GSAP MCP + Exa fetch library docs |
-| **Code** | 27B | Writes files per task (full project context + docs) |
-| **Build** | — | `vite build` — auto-fix loop if errors |
-| **Audit** | — | Playwright: screenshot + console + 9 checks |
-| **Review** | 9B VL | Sees screenshot, scores quality, flags issues |
-| **Fix** | 27B | Targeted fixes if critical issues found |
+| **Plan** | 27B | Breaks request into 3-5 small tasks |
+| **Research** | — | Import-aware doc fetching (Context7 + Exa) |
+| **Code** | 27B | Search/replace diffs per task (deep API surface + docs) |
+| **TS Check** | 27B | `tsc --noEmit` per task — self-correction with imported files |
+| **Build** | — | `vite build` — auto-fix loop if errors (max 3) |
+| **Audit** | — | Playwright: screenshot + console + 9 deterministic checks |
 | **Report** | — | Deterministic summary + audit data |
+| **Git** | — | Auto-commit to per-project git repo |
 | **Memory** | — | Updates memory.md for next iteration |
 
 ## File Structure
@@ -219,13 +237,10 @@ eek.GO/
 │   └── package.json
 ├── workflows/
 │   ├── .env                      Pipeline configuration
-│   ├── eek-go-v3.json            Main workflow (deployed to n8n)
-│   └── eek-go.json               v2 backup
+│   └── eek-go-v3.json            v3 workflow (legacy, kept as backup)
 ├── prompts/                      Agent prompt documentation
 │   ├── planner.md
 │   ├── coder.md
-│   ├── code-reviewer.md
-│   ├── fixer.md
 │   └── README.md
 ├── docs/
 │   ├── pipeline-architecture.md  Full pipeline flow documentation
@@ -241,9 +256,9 @@ See [docs/Troubleshooting Guide.md](docs/Troubleshooting%20Guide.md).
 
 | Problem | Fix |
 |---------|-----|
-| Model won't load | Check VRAM. Only one model at a time. |
+| Model won't load | Check VRAM. 27B needs ~22GB across GPUs. |
 | Content invisible | GSAP `gsap.from` + StrictMode issue. Use `gsap.fromTo`. |
-| Reviewer gives wrong score | Audits are the source of truth, not the LLM score. |
 | memory.md stale | Check Write Project Memory node for JS errors. |
 | Build loop | Auto-fix limited to 3 attempts. Check build error in report. |
 | Preview stuck | Restart file-api container. |
+| TS Fix oscillating | Both sides of prop mismatch need fixing in same pass. |
