@@ -22,9 +22,9 @@ v4 uses **deterministic checks only** (TS check, build check, Playwright audits)
 
 | Agent | temp | top_p | top_k | max_tokens |
 |-------|------|-------|-------|------------|
-| Planner | 0.6 | 0.95 | 20 | 32768 |
+| Planner | 1.0 | 0.95 | 20 | 32768 |
 | Coder | 0.6 | 0.95 | 20 | 32768 |
-| TS Fix | 0.6 | 0.95 | 20 | 32768 |
+| TS Fix | 0.3 | 0.9 | 20 | 32768 |
 | Auto-Fix | 0.6 | 0.95 | 20 | 32768 |
 
 All agents use the same 27B model. No model swaps during pipeline execution.
